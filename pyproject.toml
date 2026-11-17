@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "darklearn"
+version = "0.1.0-day1"
+description = "Pure-stdlib Python library for training ML and LLM models — tensor, autograd, nn, optim, data. No external dependencies."
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "Gaurav Singh"}]
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["darklearn*"]
