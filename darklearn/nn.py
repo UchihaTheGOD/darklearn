@@ -70,6 +70,23 @@ class Tanh(Module):
         return x.tanh()
 
 
+class Sigmoid(Module):
+    def forward(self, x: Tensor) -> Tensor:
+        return x.sigmoid()
+
+
+class GELU(Module):
+    """Gaussian Error Linear Unit (exact tanh approximation).
+
+    gelu(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3))).
+    Built from Tensor ops, so autograd flows through it.
+    """
+
+    def forward(self, x: Tensor) -> Tensor:
+        c = math.sqrt(2.0 / math.pi)
+        return 0.5 * x * (1.0 + (c * (x + 0.044715 * (x ** 3))).tanh())
+
+
 class Sequential(Module):
     def __init__(self, *layers: Module):
         super().__init__()
@@ -129,5 +146,5 @@ class CrossEntropyLoss(Module):
         return total / float(batch)
 
 
-__all__ = ["Module", "Linear", "ReLU", "Tanh", "Sequential",
+__all__ = ["Module", "Linear", "ReLU", "Tanh", "Sigmoid", "GELU", "Sequential",
            "MSELoss", "mse_loss", "CrossEntropyLoss"]

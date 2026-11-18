@@ -52,6 +52,26 @@ def test_tensor_max():
     assert Tensor([-2.0]).max().item() == -2.0
 
 
+def test_sigmoid_gelu_modules():
+    from darklearn import Sigmoid, GELU
+    x = Tensor([-1.0, 0.0, 1.0, 2.0])
+    s = Sigmoid()(x).tolist()
+    assert abs(s[1] - 0.5) < 1e-6
+    assert abs(s[0] - 0.2689414213699951) < 1e-6
+    # GELU vs the math reference
+    g = GELU()(x).tolist()
+    for xv, gv in zip([-1.0, 0.0, 1.0, 2.0], g):
+        ref = 0.5 * xv * (1.0 + math.tanh(math.sqrt(2.0 / math.pi)
+                                          * (xv + 0.044715 * xv ** 3)))
+        assert abs(gv - ref) < 1e-5, f"gelu({xv}) = {gv}, expected {ref}"
+    assert abs(g[1]) < 1e-6  # gelu(0) == 0
+    # grads flow through both modules
+    z = Tensor([0.4, -0.9], requires_grad=True)
+    assert gradcheck(lambda t: Sigmoid()(t).sum(), z)
+    z2 = Tensor([0.4, -0.9], requires_grad=True)
+    assert gradcheck(lambda t: GELU()(t).sum(), z2)
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):
