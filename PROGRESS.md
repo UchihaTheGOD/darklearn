@@ -111,3 +111,89 @@
 4. Add `Dropout` module with train/eval mode flag on `Module` (+ test).
 5. Add `Tensor.argmax()` + `Tensor.softmax()` helpers (+ gradchecks).
 6. Write Day 3 entry in this file. Keep each slice to its own small commit.
+
+## Day 3 — 2026-11-18 — v0.1.0-day3 (DarkCore — our own engine)
+
+### Why (user direction, 2026-11-18)
+User said the code felt like "other logics, not own" — wants darklearn's
+own, better, optimized logic, and explicitly allows multiple languages,
+not just Python. No code was copied from PyTorch/sklearn/micrograd and no
+external lib is used, but Day 1–2 was generic tutorial-style (naive i-j-k
+matmul, one closure per op). The maths is universal; the ENGINE is where
+originality lives. Day 3 therefore pivots to DarkCore. The old
+`tensor.py` engine is untouched and kept working — it is the correctness
+reference the new engine is tested against.
+
+### Built
+- `darklearn/darkcore.py` (~600 lines, stdlib only): our own engine.
+  - Tiled matmul: block 32, i-k-j order, locals cached, no attribute
+    lookups in the inner loop (`matmul_tiled`, `matmul_tiled_into`).
+  - Rows kernel: B transposed once into contiguous rows, each dot in C
+    via `sum(map(mul, ...))` — the fast pure-Python path (`matmul_rows`).
+  - Fused linear+ReLU in one pass, no intermediate tensors
+    (`fused_linear_relu_raw`, tape-aware `fused_linear_relu`).
+  - Tape autograd: flat `values` + `records` of
+    `(op_code:int, out_idx, in_idx_tuple, saved)`, op codes 1=ADD,
+    2=MUL, 3=MATMUL, 4=RELU, 5=SUM, 6=FUSED_LINEAR_RELU. Backward is a
+    single iterative reverse loop — no closures, no recursive DFS.
+  - `BufferPool`: scratch `array('f')` buffers recycled in backward
+    (transposes, matmul temporaries); live outputs never pooled.
+  - `fused_sgd_step`: grad + weight decay + momentum + update fused in
+    one in-place pass over raw arrays; returns the velocity state.
+  - `matmul()` dispatcher: C kernel when built, else rows kernel.
+- `darklearn/_darkcore.c` (C stdlib + CPython API only): tiled matmul
+  (block 32, i-k-j) + fused linear+ReLU, float32, bytes in/out.
+- `scripts/build_c.py` (stdlib only): finds cc/gcc/clang, compiles with
+  `-O3 -fPIC -shared` to `darklearn/_darkcore*.so`. No compiler ->
+  message + exit 0, Python fallback keeps working. The `.so` is
+  gitignored (`*.so` added) — build artifact, not source.
+- `darklearn/__init__.py`: exports Tape, CoreTensor, BufferPool,
+  matmul_tiled/rows, fused_linear_relu, fused_sgd_step, C_AVAILABLE;
+  `__version__ = "0.1.0-day3"`.
+- `tests/test_darkcore.py`: 8 tests. `examples/bench_darkcore.py`:
+  naive vs tiled-16/32 vs rows vs C, with a correctness check first.
+- `docs/ROADMAP.md`: new "DarkCore — our own engine" section.
+
+### Measured results (2026-11-18, Python 3.12.3, gcc 13.3, local VM)
+- `python3 tests/test_darkcore.py` — **8/8 PASS**; Day 1 **7/7**,
+  Day 2 **7/7** — 22/22 total, no regressions.
+- `examples/bench_darkcore.py` (MFLOPS, speedup vs naive Tensor @):
+
+  | n   | naive | tiled-16 | tiled-32 | rows  | C       |
+  |-----|-------|----------|----------|-------|---------|
+  | 64  | 8.27  | 9.09 (1.10x) | 9.40 (1.14x) | 39.60 (4.79x) | 7838.95 (947.83x) |
+  | 128 | 8.57  | 9.14 (1.07x) | 9.57 (1.12x) | 43.65 (5.10x) | 7617.77 (889.30x) |
+
+- Honest miss: tiling alone did **not** reach the 2x target (~1.1x).
+  Prototyped first and measured it: in CPython the bottleneck is
+  bytecode, not cache, so tiling barely helps. The 2x+ comes from the
+  rows kernel (~4–5x) and the C core (~900x). Tiling stays as the
+  reference kernel and as the C kernel's layout — it is not presented
+  as the speedup.
+- C core built cleanly on this VM (`cc 13.3.0`, `-O3`); `C_AVAILABLE`
+  is True and C results match Python bit-for-bit on the smoke check
+  and within 1e-3 on the benchmark correctness check.
+
+### Bugs fixed during Day 3
+1. Test typos: `(64, 64)` written where `(64, 64, 64)` was meant, in
+   three places in `test_darkcore.py`.
+2. Test bug: Tensor-side `x` in the fused-backward test had no
+   `requires_grad`, so `x.grad` was None — set `requires_grad=True`.
+3. Test bug: exact `==` on float32 values (`0.9`) fails on rounding —
+   switched to a tolerance comparison.
+
+### Still naive / next to optimize
+- Tape backward still builds small temporaries with list comprehensions
+  (add/mul grads); a next step is pooling those too.
+- No C fused-SGD or C backward yet — forward matmul + fused linear
+  only. Rust is possible later; C first (no cargo needed).
+- Old Day 3 plan (BCELoss, AdamW, Dropout, Xavier, argmax/softmax)
+  moves to Day 4.
+
+### Day 4 — next tasks
+1. BCELoss (+ test with sigmoid outputs).
+2. AdamW optimiser (decoupled weight decay) (+ test).
+3. Xavier/Glorot init option to `Linear` (+ test).
+4. Dropout module with train/eval mode flag on `Module` (+ test).
+5. `Tensor.argmax()` + `Tensor.softmax()` helpers (+ gradchecks).
+6. Write Day 4 entry in this file. Keep each slice to its own small commit.
