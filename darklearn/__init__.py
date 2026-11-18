@@ -1,7 +1,7 @@
 """darklearn — pure-stdlib Python library for training ML and LLM models.
 
 No external dependencies. Tensor + autograd + nn + optim + data.
-Day 1: 0.1.0-day1. See docs/ROADMAP.md for the 6–7 month plan.
+Day 2: 0.1.0-day2. See docs/ROADMAP.md for the 6–7 month plan.
 """
 
 from .tensor import Tensor
@@ -11,7 +11,7 @@ from .nn import (Module, Linear, ReLU, Tanh, Sigmoid, GELU, Sequential,
 from .optim import Optimizer, SGD, Adam, StepLR, CosineAnnealingLR, clip_grad_norm_
 from .data import Dataset, TensorDataset, DataLoader
 
-__version__ = "0.1.0-day1"
+__version__ = "0.1.0-day2"
 
 __all__ = [
     "__version__",
