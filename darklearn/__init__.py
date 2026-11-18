@@ -8,7 +8,7 @@ from .tensor import Tensor
 from .autograd import Value, backward, gradcheck
 from .nn import (Module, Linear, ReLU, Tanh, Sigmoid, GELU, Sequential,
                  MSELoss, mse_loss, CrossEntropyLoss)
-from .optim import Optimizer, SGD, Adam
+from .optim import Optimizer, SGD, Adam, StepLR, CosineAnnealingLR, clip_grad_norm_
 from .data import Dataset, TensorDataset, DataLoader
 
 __version__ = "0.1.0-day1"
@@ -18,6 +18,6 @@ __all__ = [
     "Tensor", "Value", "backward", "gradcheck",
     "Module", "Linear", "ReLU", "Tanh", "Sigmoid", "GELU", "Sequential",
     "MSELoss", "mse_loss", "CrossEntropyLoss",
-    "Optimizer", "SGD", "Adam",
+    "Optimizer", "SGD", "Adam", "StepLR", "CosineAnnealingLR", "clip_grad_norm_",
     "Dataset", "TensorDataset", "DataLoader",
 ]

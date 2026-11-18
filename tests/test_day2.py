@@ -72,6 +72,53 @@ def test_sigmoid_gelu_modules():
     assert gradcheck(lambda t: GELU()(t).sum(), z2)
 
 
+def test_lr_schedulers():
+    from darklearn import SGD, StepLR, CosineAnnealingLR
+    p = Tensor([1.0], requires_grad=True)
+    opt = SGD([p], lr=0.1)
+    sched = StepLR(opt, step_size=2, gamma=0.1)
+    assert sched.get_lr() == 0.1
+    sched.step()
+    assert sched.get_lr() == 0.1
+    sched.step()
+    assert abs(sched.get_lr() - 0.01) < 1e-12
+    sched.step()
+    sched.step()
+    assert abs(sched.get_lr() - 0.001) < 1e-12
+
+    opt2 = SGD([p], lr=0.1)
+    cos = CosineAnnealingLR(opt2, T_max=4, eta_min=0.0)
+    cos.step()
+    assert abs(cos.get_lr() - 0.08535533905932738) < 1e-9
+    cos.step()
+    assert abs(cos.get_lr() - 0.05) < 1e-9
+    cos.step()
+    cos.step()
+    assert abs(cos.get_lr() - 0.0) < 1e-12
+    cos.step()  # stays at eta_min past T_max
+    assert abs(cos.get_lr() - 0.0) < 1e-12
+
+
+def test_clip_grad_norm():
+    from darklearn import clip_grad_norm_
+    a = Tensor([3.0, 4.0], requires_grad=True)
+    b = Tensor([0.0], requires_grad=True)
+    # fake grads with total norm 5.0
+    a.grad = Tensor([3.0, 4.0])
+    b.grad = Tensor([0.0])
+    total = clip_grad_norm_([a, b], max_norm=2.5)
+    assert abs(total - 5.0) < 1e-9
+    assert abs(a.grad.tolist()[0] - 1.5) < 1e-6
+    assert abs(a.grad.tolist()[1] - 2.0) < 1e-6
+    # already within budget: untouched
+    total2 = clip_grad_norm_([a, b], max_norm=10.0)
+    assert abs(total2 - 2.5) < 1e-9
+    assert abs(a.grad.tolist()[0] - 1.5) < 1e-6
+    # no grads at all: returns 0.0, no crash
+    c = Tensor([1.0], requires_grad=True)
+    assert clip_grad_norm_([c], max_norm=1.0) == 0.0
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):

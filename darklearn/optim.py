@@ -85,4 +85,67 @@ class Adam(Optimizer):
                 p._data[i] -= self.lr * m_hat / (math.sqrt(v_hat) + self.eps)
 
 
-__all__ = ["Optimizer", "SGD", "Adam"]
+__all__ = ["Optimizer", "SGD", "Adam", "StepLR", "CosineAnnealingLR",
+           "clip_grad_norm_"]
+
+
+# -- learning-rate schedulers -------------------------------------------------
+
+class StepLR:
+    """Multiply the optimizer lr by ``gamma`` every ``step_size`` steps."""
+
+    def __init__(self, optimizer: Optimizer, step_size: int, gamma: float = 0.1):
+        self.optimizer = optimizer
+        self.step_size = int(step_size)
+        self.gamma = float(gamma)
+        self._count = 0
+
+    def step(self) -> None:
+        self._count += 1
+        if self._count % self.step_size == 0:
+            self.optimizer.lr *= self.gamma
+
+    def get_lr(self) -> float:
+        return self.optimizer.lr
+
+
+class CosineAnnealingLR:
+    """Cosine-decay the lr from its starting value to ``eta_min`` over ``T_max`` steps."""
+
+    def __init__(self, optimizer: Optimizer, T_max: int, eta_min: float = 0.0):
+        self.optimizer = optimizer
+        self.base_lr = optimizer.lr
+        self.T_max = int(T_max)
+        self.eta_min = float(eta_min)
+        self._t = 0
+
+    def step(self) -> None:
+        self._t += 1
+        t = min(self._t, self.T_max)
+        cos = math.cos(math.pi * t / self.T_max)
+        self.optimizer.lr = self.eta_min + 0.5 * (self.base_lr - self.eta_min) * (1.0 + cos)
+
+    def get_lr(self) -> float:
+        return self.optimizer.lr
+
+
+# -- gradient clipping ---------------------------------------------------------
+
+def clip_grad_norm_(params, max_norm: float) -> float:
+    """Scale all grads so their total L2 norm is at most ``max_norm``.
+
+    Returns the total norm before clipping. No-op when no grads exist
+    or the norm is already within budget.
+    """
+    grads = [p.grad for p in params if p.grad is not None]
+    if not grads:
+        return 0.0
+    total = math.sqrt(sum(float(x) * float(x)
+                          for g in grads for x in g._data))
+    if total <= max_norm or total == 0.0:
+        return total
+    scale = max_norm / total
+    for g in grads:
+        for i in range(g.numel):
+            g._data[i] *= scale
+    return total
