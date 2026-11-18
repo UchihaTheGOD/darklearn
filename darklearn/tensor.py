@@ -433,6 +433,59 @@ class Tensor:
         out._backward = _bw
         return out
 
+    def sigmoid(self) -> "Tensor":
+        # Numerically stable: 1/(1+exp(-x)) for x>=0, exp(x)/(1+exp(x)) for x<0.
+        out_flat = []
+        for x in self._data:
+            x = float(x)
+            if x >= 0.0:
+                out_flat.append(1.0 / (1.0 + math.exp(-x)))
+            else:
+                ex = math.exp(x)
+                out_flat.append(ex / (1.0 + ex))
+        out = self._new(out_flat, self.shape, (self,), "sigmoid", lambda: None)
+
+        def _bw():
+            if out.grad is not None and self.requires_grad:
+                g = [float(gv) * ov * (1.0 - ov)
+                     for gv, ov in zip(out.grad._data, out_flat)]
+                self._accum(Tensor(g, shape=self.shape))
+        out._backward = _bw
+        return out
+
+    def pow(self, exponent: Number) -> "Tensor":
+        """Elementwise power with a scalar exponent: ``x ** p``."""
+        p = float(exponent)
+        out_flat = [float(x) ** p for x in self._data]
+        out = self._new(out_flat, self.shape, (self,), "pow", lambda: None)
+
+        def _bw():
+            if out.grad is not None and self.requires_grad:
+                g = [float(gv) * p * (float(xv) ** (p - 1.0))
+                     for gv, xv in zip(out.grad._data, self._data)]
+                self._accum(Tensor(g, shape=self.shape))
+        out._backward = _bw
+        return out
+
+    def __pow__(self, exponent: Number) -> "Tensor":
+        return self.pow(exponent)
+
+    def max(self) -> "Tensor":
+        """Scalar Tensor holding the largest element.
+
+        Gradient flows to the first argmax position (ties: first wins).
+        """
+        idx = max(range(self.numel), key=lambda i: float(self._data[i]))
+        out = self._new([float(self._data[idx])], (), (self,), "max", lambda: None)
+
+        def _bw():
+            if out.grad is not None and self.requires_grad:
+                g = [0.0] * self.numel
+                g[idx] = float(out.grad._data[0])
+                self._accum(Tensor(g, shape=self.shape))
+        out._backward = _bw
+        return out
+
     def sum(self) -> "Tensor":
         total = sum(float(x) for x in self._data)
         out = self._new([total], (), (self,), "sum", lambda: None)
