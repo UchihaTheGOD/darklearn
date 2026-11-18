@@ -119,6 +119,26 @@ def test_clip_grad_norm():
     assert clip_grad_norm_([c], max_norm=1.0) == 0.0
 
 
+def test_trainer_lite():
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "examples"))
+    import trainer_lite
+    from darklearn import (Sequential, Linear, ReLU, Adam, MSELoss,
+                           TensorDataset, DataLoader, StepLR)
+    import random
+    rng = random.Random(0)
+    xs = [[rng.uniform(-1, 1), rng.uniform(-1, 1)] for _ in range(32)]
+    ys = [x[0] + 2.0 * x[1] for x in xs]
+    loader = DataLoader(TensorDataset(xs, ys), batch_size=8, shuffle=True, seed=0)
+    model = Sequential(Linear(2, 8, seed=1), ReLU(), Linear(8, 1, seed=2))
+    opt = Adam(model.parameters(), lr=0.05)
+    sched = StepLR(opt, step_size=10, gamma=0.5)
+    trainer = trainer_lite.Trainer(model, MSELoss(), opt, scheduler=sched,
+                                   max_grad_norm=1.0)
+    history = trainer.fit(loader, epochs=5, log_every=100)
+    assert len(history) == 5
+    assert history[-1] < history[0], f"loss did not decrease: {history}"
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):
