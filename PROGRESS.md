@@ -197,3 +197,54 @@ reference the new engine is tested against.
 4. Dropout module with train/eval mode flag on `Module` (+ test).
 5. `Tensor.argmax()` + `Tensor.softmax()` helpers (+ gradchecks).
 6. Write Day 4 entry in this file. Keep each slice to its own small commit.
+
+## Day 4 — 2026-11-19 — v0.1.0-day4 (Month 2 — losses, optim, init, dropout)
+
+### Built
+- `Tensor.argmax(dim=None)` — flat int, or per-row / per-column list for
+  2-d (first max wins on ties). No grad (an index is not differentiable).
+- `Tensor.softmax(dim=-1)` — stable max-subtraction per slice, 1-d and
+  2-d (row- or column-wise); custom backward via the softmax Jacobian
+  `grad_i = s_i * (g_i - sum_j g_j * s_j)`, gradchecked 1-d and 2-d.
+- `Tensor.clamp(min, max)` — elementwise clamp; grad passes through only
+  where the input was inside the range.
+- `BCELoss` in `nn.py`: mean binary cross-entropy, probs clamped to
+  [1e-7, 1-1e-7] so log(0) can never give -inf; built from Tensor ops.
+  End-to-end test trains a tiny sigmoid classifier with BCE + Adam.
+- `AdamW` in `optim.py`: decoupled weight decay (`p -= lr*wd*p` before
+  the Adam update). Test proves it differs from `Adam(weight_decay=...)`
+  (0.89 vs 0.9 on the hand-computed one-step case) and matches Adam
+  exactly when wd=0.
+- Xavier/Glorot init for `Linear`: `init="xavier"` / `"glorot"`, std
+  sqrt(2/(fan_in+fan_out)); `"he"` stays the default. Unknown init
+  raises ValueError. Test checks measured std ≈ 0.1 (xavier) vs 0.141 (he).
+- `Dropout` in `nn.py` + train/eval mode on `Module`: `Module.training`
+  flag (default True), `train()` / `eval()` recurse into children.
+  Inverted dropout (survivors scaled 1/(1-p)); identity in eval mode;
+  grad flows scaled through survivors, zero where dropped. Keep rate
+  verified ≈ 1-p over 2000 elements.
+- `tests/test_day4.py`: 7 new tests. `__version__` bumped to `0.1.0-day4`.
+
+### Test results (2026-11-19, Python 3.12.3, local VM)
+- `python3 tests/test_day4.py` — **7/7 PASS**:
+  `test_tensor_argmax`, `test_tensor_softmax`, `test_tensor_clamp`,
+  `test_bce_loss`, `test_adamw`, `test_xavier_init`, `test_dropout`
+- `python3 tests/test_day1.py` — **7/7 PASS** (no regressions)
+- `python3 tests/test_day2.py` — **7/7 PASS** (no regressions)
+- `python3 tests/test_darkcore.py` — **8/8 PASS** (no regressions)
+- `python3 examples/train_mlp.py` — **loss 0.3624 -> 0.0000** (unchanged)
+- `python3 examples/trainer_lite.py` — **loss 0.2364 -> 0.0008** (unchanged)
+
+### Bugs fixed during Day 4
+1. Test bug: exact `==` on softmax of `[0,0,0]` fails on float32 rounding
+   (0.33333334 vs 1/3) — switched to a tolerance comparison.
+2. Missing export: `BCELoss` was in `nn.py` but not in
+   `darklearn/__init__.py` — added to imports and `__all__`.
+
+### Day 5 — next tasks (Month 3 — data)
+1. `split_dataset` train/val split helper in `data.py` (+ test).
+2. `Normalize` transform (mean/std) in `data.py` (+ test).
+3. `TextDataset` — character-level text dataset for the tiny LM later (+ test).
+4. `Dataset.map` — apply a transform over a dataset (+ test).
+5. Example: train/val split demo on the MLP example.
+6. Write Day 5 entry in this file. Keep each slice to its own small commit.
