@@ -186,6 +186,51 @@ def test_xavier_init():
         raise AssertionError("unknown init should raise ValueError")
 
 
+def test_dropout():
+    from darklearn import Dropout, Sequential, Linear, ReLU
+    x = Tensor([1.0, 2.0, 3.0, 4.0])
+    # eval mode: identity, exactly
+    d = Dropout(0.5, seed=0)
+    d.eval()
+    assert d(x).tolist() == [1.0, 2.0, 3.0, 4.0]
+    assert d.training is False
+    # train mode: outputs are 0 or x/(1-p) = 2x, never anything else
+    d.train()
+    assert d.training is True
+    out = d(x).tolist()
+    assert all(v == 0.0 or abs(v - 2.0 * xv) < 1e-6
+               for v, xv in zip(out, [1.0, 2.0, 3.0, 4.0]))
+    assert any(v == 0.0 for v in out)  # some dropped with this seed
+    assert any(v != 0.0 for v in out)  # some kept
+    # grad flows: 0 where dropped, 2x-scale where kept
+    z = Tensor([1.0, 2.0, 3.0, 4.0], requires_grad=True)
+    d2 = Dropout(0.5, seed=0)
+    d2(z).sum().backward()
+    assert z.grad.tolist() == [0.0 if v == 0.0 else 2.0 for v in out]
+    # p=0 is identity even in train mode
+    assert Dropout(0.0)(x).tolist() == [1.0, 2.0, 3.0, 4.0]
+    # keep rate is ~1-p over many elements
+    big = Tensor([1.0] * 2000)
+    kept = sum(1 for v in Dropout(0.5, seed=1)(big).tolist() if v != 0.0)
+    assert 900 < kept < 1100, f"kept {kept}/2000, expected ~1000"
+    # train()/eval() recurse into children (Sequential -> Dropout)
+    model = Sequential(Linear(2, 4, seed=1), ReLU(), Dropout(0.5, seed=2),
+                       Linear(4, 1, seed=3))
+    model.eval()
+    assert model.training is False
+    assert model.layers[2].training is False
+    assert model.layers[0].training is False
+    model.train()
+    assert model.layers[2].training is True
+    # bad p raises
+    try:
+        Dropout(1.0)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Dropout(1.0) should raise ValueError")
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):

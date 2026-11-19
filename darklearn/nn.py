@@ -3,12 +3,43 @@
 from __future__ import annotations
 
 import math
+import random
 
 from .tensor import Tensor
 
 
 class Module:
-    """Base class for all layers / models."""
+    """Base class for all layers / models.
+
+    ``training`` is True by default; ``eval()`` switches a module (and
+    all its children) to inference mode, ``train()`` switches back.
+    Layers like Dropout behave differently in the two modes.
+    """
+
+    def __init__(self):
+        self.training = True
+
+    def train(self, mode: bool = True) -> "Module":
+        """Set training mode (recursively) and return self."""
+        self.training = bool(mode)
+        for child in self._children():
+            child.train(mode)
+        return self
+
+    def eval(self) -> "Module":
+        """Switch to evaluation mode (recursively) and return self."""
+        return self.train(False)
+
+    def _children(self) -> list["Module"]:
+        children: list[Module] = []
+        for v in vars(self).values():
+            if isinstance(v, Module):
+                children.append(v)
+            elif isinstance(v, (list, tuple)):
+                for item in v:
+                    if isinstance(item, Module):
+                        children.append(item)
+        return children
 
     def parameters(self) -> list[Tensor]:
         params: list[Tensor] = []
@@ -99,6 +130,35 @@ class GELU(Module):
         return 0.5 * x * (1.0 + (c * (x + 0.044715 * (x ** 3))).tanh())
 
 
+class Dropout(Module):
+    """Randomly zero elements with probability ``p`` during training
+    (inverted dropout: survivors are scaled by ``1/(1-p)`` so the
+    expected output is unchanged). In eval mode it is the identity.
+
+    The mask is a plain constant Tensor, so autograd flows through the
+    surviving elements (scaled) and is zero where dropped.
+    """
+
+    def __init__(self, p: float = 0.5, seed: int | None = None):
+        super().__init__()
+        if not 0.0 <= p < 1.0:
+            raise ValueError(f"Dropout p must be in [0, 1), got {p}")
+        self.p = float(p)
+        self._rng = random.Random(seed)
+
+    def forward(self, x: Tensor) -> Tensor:
+        if not self.training or self.p == 0.0:
+            return x
+        keep = 1.0 - self.p
+        scale = 1.0 / keep
+        mask = [scale if self._rng.random() < keep else 0.0
+                for _ in range(x.numel)]
+        return x * Tensor(mask, shape=x.shape)
+
+    def __repr__(self):
+        return f"Dropout(p={self.p})"
+
+
 class Sequential(Module):
     def __init__(self, *layers: Module):
         super().__init__()
@@ -179,5 +239,5 @@ class BCELoss(Module):
         return loss.mean()
 
 
-__all__ = ["Module", "Linear", "ReLU", "Tanh", "Sigmoid", "GELU", "Sequential",
-           "MSELoss", "mse_loss", "CrossEntropyLoss", "BCELoss"]
+__all__ = ["Module", "Linear", "ReLU", "Tanh", "Sigmoid", "GELU", "Dropout",
+           "Sequential", "MSELoss", "mse_loss", "CrossEntropyLoss", "BCELoss"]
