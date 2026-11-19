@@ -486,6 +486,67 @@ class Tensor:
         out._backward = _bw
         return out
 
+    def argmax(self, dim: int | None = None):
+        """Index of the largest element (first wins on ties).
+
+        ``dim=None`` returns a flat int. For a 2-d tensor, ``dim=-1`` (or 1)
+        returns one index per row, ``dim=0`` one per column.
+        No gradient — an index is not differentiable.
+        """
+        if dim is None:
+            return max(range(self.numel), key=lambda i: float(self._data[i]))
+        if len(self.shape) != 2:
+            raise ValueError("argmax(dim=...) needs a 2-d tensor")
+        rows, cols = self.shape
+        d = dim % 2
+        if d == 1:
+            return [max(range(cols), key=lambda c: float(self._data[r * cols + c]))
+                    for r in range(rows)]
+        return [max(range(rows), key=lambda r: float(self._data[r * cols + c]))
+                for c in range(cols)]
+
+    def softmax(self, dim: int = -1) -> "Tensor":
+        """Softmax along ``dim`` (default: last). Numerically stable
+        (max-subtraction per slice). Gradient is the softmax Jacobian
+        applied to the upstream grad, per slice:
+        ``grad_i = s_i * (g_i - sum_j g_j * s_j)``.
+        """
+        if len(self.shape) == 1:
+            slices = [list(range(self.numel))]
+        elif len(self.shape) == 2:
+            rows, cols = self.shape
+            d = dim % 2
+            if d == 1:
+                slices = [list(range(r * cols, (r + 1) * cols))
+                          for r in range(rows)]
+            else:
+                slices = [[r * cols + c for r in range(rows)]
+                          for c in range(cols)]
+        else:
+            raise ValueError("softmax only supports 1-d / 2-d tensors")
+        out_flat = [0.0] * self.numel
+        for sl in slices:
+            m = max(float(self._data[i]) for i in sl)
+            exps = [math.exp(float(self._data[i]) - m) for i in sl]
+            total = sum(exps)
+            for i, e in zip(sl, exps):
+                out_flat[i] = e / total
+        out = self._new(out_flat, self.shape, (self,), "softmax", lambda: None)
+
+        def _bw():
+            if out.grad is None or not self.requires_grad:
+                return
+            g_flat = [0.0] * self.numel
+            for sl in slices:
+                s = [float(out._data[i]) for i in sl]
+                g = [float(out.grad._data[i]) for i in sl]
+                dot = sum(gi * si for gi, si in zip(g, s))
+                for i, gi, si in zip(sl, g, s):
+                    g_flat[i] = si * (gi - dot)
+            self._accum(Tensor(g_flat, shape=self.shape))
+        out._backward = _bw
+        return out
+
     def sum(self) -> "Tensor":
         total = sum(float(x) for x in self._data)
         out = self._new([total], (), (self,), "sum", lambda: None)
