@@ -64,6 +64,61 @@ def test_tensor_softmax():
     assert gradcheck(lambda t: (t.softmax() * t.softmax()).sum(), z3)
 
 
+def test_tensor_clamp():
+    x = Tensor([-2.0, 0.5, 3.0], requires_grad=True)
+    c = x.clamp(0.0, 1.0)
+    assert c.tolist() == [0.0, 0.5, 1.0]
+    c.sum().backward()
+    # grad passes through only where unclamped
+    assert x.grad.tolist() == [0.0, 1.0, 0.0]
+
+
+def test_bce_loss():
+    from darklearn import BCELoss, Sigmoid
+    loss_fn = BCELoss()
+    # hand-computed: p=0.5, y=1 -> -log(0.5); p=0.5, y=0 -> -log(0.5)
+    p = Tensor([0.5, 0.5])
+    y = Tensor([1.0, 0.0])
+    assert abs(loss_fn(p, y).item() - 0.6931471805599453) < 1e-6
+    # confident correct prediction -> small loss; confident wrong -> large
+    assert loss_fn(Tensor([0.9]), Tensor([1.0])).item() < 0.11
+    assert loss_fn(Tensor([0.9]), Tensor([0.0])).item() > 2.3
+    # extreme probabilities never produce inf/nan (clamped)
+    extreme = loss_fn(Tensor([0.0, 1.0]), Tensor([1.0, 0.0])).item()
+    assert math.isfinite(extreme) and extreme > 10.0
+    # grad flows: d/dp of BCE at p=0.5, y=1 is -1/p = -2 (mean over 2 items: -1)
+    z = Tensor([0.5, 0.5], requires_grad=True)
+    loss_fn(z, y).backward()
+    assert abs(z.grad.tolist()[0] - (-1.0)) < 1e-5
+    assert abs(z.grad.tolist()[1] - 1.0) < 1e-5
+    # end-to-end: sigmoid outputs + BCE trains a tiny classifier down
+    from darklearn import Sequential, Linear, Adam
+    import random
+    rng = random.Random(0)
+    xs = [[rng.uniform(-1, 1), rng.uniform(-1, 1)] for _ in range(32)]
+    ys = [1.0 if x[0] + x[1] > 0 else 0.0 for x in xs]
+    model = Sequential(Linear(2, 4, seed=1), Sigmoid(), Linear(4, 1, seed=2),
+                       Sigmoid())
+    opt = Adam(model.parameters(), lr=0.05)
+    first = None
+    for epoch in range(30):
+        opt.zero_grad()
+        pred = model(Tensor(xs))
+        loss = loss_fn(pred.reshape(32), Tensor(ys))
+        if first is None:
+            first = loss.item()
+        loss.backward()
+        opt.step()
+    assert loss.item() < first, f"BCE loss did not decrease: {first} -> {loss.item()}"
+    # shape mismatch raises
+    try:
+        loss_fn(Tensor([0.5]), Tensor([1.0, 0.0]))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("BCELoss shape mismatch should raise")
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):

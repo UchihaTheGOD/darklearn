@@ -486,6 +486,24 @@ class Tensor:
         out._backward = _bw
         return out
 
+    def clamp(self, min_val: Number, max_val: Number) -> "Tensor":
+        """Elementwise clamp to ``[min_val, max_val]``.
+
+        Gradient passes through only where the input was inside the
+        range (0 where it was clamped).
+        """
+        lo, hi = float(min_val), float(max_val)
+        out_flat = [min(hi, max(lo, float(x))) for x in self._data]
+        out = self._new(out_flat, self.shape, (self,), "clamp", lambda: None)
+
+        def _bw():
+            if out.grad is not None and self.requires_grad:
+                g = [float(gv) if lo <= float(xv) <= hi else 0.0
+                     for gv, xv in zip(out.grad._data, self._data)]
+                self._accum(Tensor(g, shape=self.shape))
+        out._backward = _bw
+        return out
+
     def argmax(self, dim: int | None = None):
         """Index of the largest element (first wins on ties).
 

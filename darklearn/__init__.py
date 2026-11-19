@@ -9,7 +9,7 @@ Day 3: 0.1.0-day3. See docs/ROADMAP.md for the 6–7 month plan.
 from .tensor import Tensor
 from .autograd import Value, backward, gradcheck
 from .nn import (Module, Linear, ReLU, Tanh, Sigmoid, GELU, Sequential,
-                 MSELoss, mse_loss, CrossEntropyLoss)
+                 MSELoss, mse_loss, CrossEntropyLoss, BCELoss)
 from .optim import Optimizer, SGD, Adam, StepLR, CosineAnnealingLR, clip_grad_norm_
 from .data import Dataset, TensorDataset, DataLoader
 from .darkcore import (Tape, CoreTensor, BufferPool, matmul_tiled,
@@ -22,7 +22,7 @@ __all__ = [
     "__version__",
     "Tensor", "Value", "backward", "gradcheck",
     "Module", "Linear", "ReLU", "Tanh", "Sigmoid", "GELU", "Sequential",
-    "MSELoss", "mse_loss", "CrossEntropyLoss",
+    "MSELoss", "mse_loss", "CrossEntropyLoss", "BCELoss",
     "Optimizer", "SGD", "Adam", "StepLR", "CosineAnnealingLR", "clip_grad_norm_",
     "Dataset", "TensorDataset", "DataLoader",
     "Tape", "CoreTensor", "BufferPool", "matmul_tiled", "matmul_rows",

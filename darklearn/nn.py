@@ -146,5 +146,26 @@ class CrossEntropyLoss(Module):
         return total / float(batch)
 
 
+class BCELoss(Module):
+    """Binary cross-entropy, mean over all elements:
+    ``-(y*log(p) + (1-y)*log(1-p))``.
+
+    ``pred`` holds probabilities in [0, 1] (typically a sigmoid output),
+    ``target`` holds 0/1 labels of the same shape. Probabilities are
+    clamped to [1e-7, 1-1e-7] so log(0) can never produce -inf.
+    Built from Tensor ops, so autograd flows through it.
+    """
+
+    def forward(self, pred: Tensor, target: Tensor) -> Tensor:
+        if pred.shape != target.shape:
+            raise ValueError(f"BCELoss needs matching shapes, "
+                             f"got {pred.shape} vs {target.shape}")
+        eps = 1e-7
+        p = pred.clamp(eps, 1.0 - eps)
+        one = Tensor(1.0, shape=())
+        loss = -(target * p.log() + (one - target) * (one - p).log())
+        return loss.mean()
+
+
 __all__ = ["Module", "Linear", "ReLU", "Tanh", "Sigmoid", "GELU", "Sequential",
-           "MSELoss", "mse_loss", "CrossEntropyLoss"]
+           "MSELoss", "mse_loss", "CrossEntropyLoss", "BCELoss"]
