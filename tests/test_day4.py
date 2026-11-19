@@ -119,6 +119,46 @@ def test_bce_loss():
         raise AssertionError("BCELoss shape mismatch should raise")
 
 
+def test_adamw():
+    from darklearn import Adam, AdamW
+    # one hand-computed step: p=1, grad=1, lr=0.1, wd=0.1
+    p = Tensor([1.0], requires_grad=True)
+    p.grad = Tensor([1.0])
+    AdamW([p], lr=0.1, weight_decay=0.1).step()
+    # decay first: 1 - 0.1*0.1*1 = 0.99, then Adam step ~0.1 -> 0.89
+    assert abs(p.tolist()[0] - 0.89) < 1e-6, p.tolist()
+    # Adam with L2 in the grad gives a DIFFERENT answer (0.9): decay is
+    # decoupled in AdamW, not rescaled by the adaptive step
+    q = Tensor([1.0], requires_grad=True)
+    q.grad = Tensor([1.0])
+    Adam([q], lr=0.1, weight_decay=0.1).step()
+    assert abs(q.tolist()[0] - 0.9) < 1e-6, q.tolist()
+    assert abs(p.tolist()[0] - q.tolist()[0]) > 1e-3
+    # wd=0: AdamW is exactly Adam
+    r = Tensor([2.0, -1.0], requires_grad=True)
+    r.grad = Tensor([0.5, -0.25])
+    s = Tensor([2.0, -1.0], requires_grad=True)
+    s.grad = Tensor([0.5, -0.25])
+    AdamW([r], lr=0.01, weight_decay=0.0).step()
+    Adam([s], lr=0.01).step()
+    assert r.tolist() == s.tolist()
+    # AdamW trains the MLP loss down
+    from darklearn import Sequential, Linear, ReLU, MSELoss
+    model = Sequential(Linear(2, 8, seed=1), ReLU(), Linear(8, 1, seed=2))
+    opt = AdamW(model.parameters(), lr=0.05, weight_decay=0.01)
+    xs = Tensor([[0.5, -0.5], [1.0, 0.0], [-1.0, 1.0], [0.0, 0.5]])
+    ys = Tensor([[x[0] + 2.0 * x[1]] for x in xs.tolist()])
+    first = None
+    for _ in range(50):
+        opt.zero_grad()
+        loss = MSELoss()(model(xs), ys)
+        if first is None:
+            first = loss.item()
+        loss.backward()
+        opt.step()
+    assert loss.item() < first, f"AdamW loss did not decrease: {first} -> {loss.item()}"
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):

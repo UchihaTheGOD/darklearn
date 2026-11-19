@@ -85,7 +85,49 @@ class Adam(Optimizer):
                 p._data[i] -= self.lr * m_hat / (math.sqrt(v_hat) + self.eps)
 
 
-__all__ = ["Optimizer", "SGD", "Adam", "StepLR", "CosineAnnealingLR",
+class AdamW(Optimizer):
+    """Adam with decoupled weight decay (Loshchilov & Hutter, 2017).
+
+    Unlike ``Adam(weight_decay=...)``, which adds ``wd * p`` to the
+    gradient (so the decay is rescaled by Adam's adaptive step), AdamW
+    decays the weights directly: ``p -= lr * wd * p`` before the Adam
+    update. Same betas/eps/bias-correction as Adam.
+    """
+
+    def __init__(self, params, lr: float = 0.001, betas=(0.9, 0.999),
+                 eps: float = 1e-8, weight_decay: float = 0.01):
+        super().__init__(params, lr)
+        self.beta1, self.beta2 = float(betas[0]), float(betas[1])
+        self.eps = float(eps)
+        self.weight_decay = float(weight_decay)
+        self.t = 0
+        self._m: dict[int, list[float]] = {}
+        self._v: dict[int, list[float]] = {}
+
+    def step(self) -> None:
+        self.t += 1
+        b1, b2 = self.beta1, self.beta2
+        bc1 = 1.0 - b1 ** self.t
+        bc2 = 1.0 - b2 ** self.t
+        for p in self.params:
+            if p.grad is None:
+                continue
+            # decoupled decay first: plain SGD-style shrink, NOT in the grad
+            if self.weight_decay:
+                for i in range(p.numel):
+                    p._data[i] -= self.lr * self.weight_decay * float(p._data[i])
+            m = self._m.setdefault(id(p), [0.0] * p.numel)
+            v = self._v.setdefault(id(p), [0.0] * p.numel)
+            for i in range(p.numel):
+                gi = float(p.grad._data[i])
+                m[i] = b1 * m[i] + (1.0 - b1) * gi
+                v[i] = b2 * v[i] + (1.0 - b2) * gi * gi
+                m_hat = m[i] / bc1
+                v_hat = v[i] / bc2
+                p._data[i] -= self.lr * m_hat / (math.sqrt(v_hat) + self.eps)
+
+
+__all__ = ["Optimizer", "SGD", "Adam", "AdamW", "StepLR", "CosineAnnealingLR",
            "clip_grad_norm_"]
 
 
