@@ -159,6 +159,33 @@ def test_adamw():
     assert loss.item() < first, f"AdamW loss did not decrease: {first} -> {loss.item()}"
 
 
+def test_xavier_init():
+    from darklearn import Linear
+    # Xavier std is sqrt(2/(fan_in+fan_out)): 100->100 gives 0.1;
+    # He std is sqrt(2/fan_in): 100->100 gives ~0.141. With 10k samples
+    # the measured std should sit close to the target.
+    for init, target in (("xavier", 0.1), ("glorot", 0.1), ("he", 0.1414)):
+        layer = Linear(100, 100, seed=7, init=init)
+        vals = layer.weight.tolist()
+        flat = [v for row in vals for v in row]
+        mean = sum(flat) / len(flat)
+        var = sum((v - mean) ** 2 for v in flat) / len(flat)
+        std = math.sqrt(var)
+        assert abs(std - target) < 0.02, f"{init}: std {std}, expected ~{target}"
+        assert abs(mean) < 0.02
+    # default is still He
+    default = Linear(100, 100, seed=7)
+    assert default.init == "he"
+    assert default.weight.tolist() == Linear(100, 100, seed=7).weight.tolist()
+    # unknown init raises
+    try:
+        Linear(4, 4, init="orthogonal")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("unknown init should raise ValueError")
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):

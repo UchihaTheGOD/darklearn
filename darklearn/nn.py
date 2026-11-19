@@ -37,13 +37,25 @@ class Module:
 
 
 class Linear(Module):
-    """Fully-connected layer: y = x @ W.T + b. x is (batch, in_features)."""
+    """Fully-connected layer: y = x @ W.T + b. x is (batch, in_features).
 
-    def __init__(self, in_features: int, out_features: int, seed: int | None = None):
+    ``init`` picks the weight scale: ``"he"`` (default, std sqrt(2/fan_in),
+    good with ReLU) or ``"xavier"`` / ``"glorot"`` (std sqrt(2/(fan_in +
+    fan_out)), good with tanh/sigmoid).
+    """
+
+    def __init__(self, in_features: int, out_features: int,
+                 seed: int | None = None, init: str = "he"):
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
-        scale = math.sqrt(2.0 / max(1, in_features))
+        if init == "he":
+            scale = math.sqrt(2.0 / max(1, in_features))
+        elif init in ("xavier", "glorot"):
+            scale = math.sqrt(2.0 / max(1, in_features + out_features))
+        else:
+            raise ValueError(f"unknown init {init!r}: use 'he' or 'xavier'")
+        self.init = init
         w = Tensor.randn((out_features, in_features), seed=seed,
                          requires_grad=True)
         # scale in place (keeps requires_grad)
