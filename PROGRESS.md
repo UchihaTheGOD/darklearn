@@ -248,3 +248,56 @@ reference the new engine is tested against.
 4. `Dataset.map` — apply a transform over a dataset (+ test).
 5. Example: train/val split demo on the MLP example.
 6. Write Day 5 entry in this file. Keep each slice to its own small commit.
+
+## Day 5 — 2026-11-20 — v0.1.0-day5 (Month 3 — data)
+
+### Built
+- `Subset` + `split_dataset` in `data.py`: seeded shuffle, split by
+  `lengths=(train, val)` or `val_fraction` in (0, 1) (rounded, clamped
+  to 1..n-1). Same seed reproduces the split; subsets are disjoint and
+  cover the dataset. Bad inputs raise ValueError.
+- `Dataset.map(fn)` + `MappedDataset`: lazy view applying a transform
+  to each item; original dataset untouched, maps compose.
+- `Normalize` in `data.py`: `(x - mean) / std`, scalar or per-feature
+  mean/std; works on feature-row lists and on Tensors (per-row for
+  2-d, same shape back). `Normalize.from_dataset` computes per-feature
+  mean/population-std; zero-variance features get std 1.0 (via eps)
+  instead of dividing by zero.
+- `TextDataset` in `data.py`: character-level dataset for the tiny LM
+  (Month 4). Vocab = sorted unique chars; item `i` is
+  `(input_ids, next_id)` — `seq_len` chars plus the one that follows —
+  so it fits the existing DataLoader ((batch, seq_len) x, (batch, 1) y).
+  `encode`/`decode` helpers, `stride` option.
+- `examples/train_val_split.py`: MLP on 80% train / 20% val, reports
+  both losses every 50 steps.
+- `tests/test_day5.py`: 4 new tests. `__version__` bumped to `0.1.0-day5`.
+- All new names exported from `darklearn`: `Subset`, `MappedDataset`,
+  `split_dataset`, `Normalize`, `TextDataset`.
+
+### Test results (2026-11-20, Python 3.12.3, local VM)
+- `python3 tests/test_day5.py` — **4/4 PASS**:
+  `test_text_dataset`, `test_normalize`, `test_split_dataset`,
+  `test_dataset_map`
+- `python3 tests/test_day1.py` — **7/7 PASS** (no regressions)
+- `python3 tests/test_day2.py` — **7/7 PASS** (no regressions)
+- `python3 tests/test_day4.py` — **7/7 PASS** (no regressions)
+- `python3 tests/test_darkcore.py` — **8/8 PASS** (no regressions)
+- Total: **33/33 PASS**
+- `python3 examples/train_mlp.py` — **loss 0.3624 -> 0.0000** (unchanged)
+- `python3 examples/trainer_lite.py` — **loss 0.2364 -> 0.0008** (unchanged)
+- `python3 examples/train_val_split.py` — **train 0.3934 -> 0.0000,
+  val 0.2692 -> 0.0000** (200 steps)
+
+### Bugs fixed during Day 5
+1. Real bug: `Normalize.__call__` on a 2-d Tensor flattened the whole
+   tensor into one row before normalizing (length mismatch error).
+   Fixed: normalize per row for 2-d Tensors, flat for 1-d.
+
+### Day 6 — next tasks (Month 3 — tokenizer)
+1. BPE tokenizer from scratch in `darklearn/tokenizer.py`: learn merges
+   from a small corpus, `encode`/`decode`, vocab save/load (JSON).
+2. `TextDataset` variant that takes token ids from the tokenizer
+   (or a `token_ids` mode) instead of chars.
+3. Tokenizer round-trip + merge-learning tests on a tiny corpus.
+4. Example: train the BPE tokenizer on a small text file, print vocab.
+5. Write Day 6 entry in this file. Keep each slice to its own small commit.
