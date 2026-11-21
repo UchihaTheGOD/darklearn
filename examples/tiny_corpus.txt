@@ -1,0 +1,13 @@
+Darklearn is a small library for training neural networks with no
+external dependencies. It starts with a tensor and a tape for gradients.
+The tensor stores numbers in a flat array and every operation records
+how to flow the gradient back. A linear layer is a matrix multiply plus
+a bias, and an optimizer is a rule for moving weights downhill.
+Training is a loop: forward, loss, backward, step. The loss falls a
+little at a time until the model fits the data. The same loop trains
+a tiny perceptron and a small language model, only the data changes.
+The tokenizer turns text into numbers so the model can read it.
+Byte pair encoding learns which pairs of bytes appear together most
+often and merges them into single tokens. Common words become one
+token, rare words stay as pieces. The model learns to predict the
+next token from the tokens before it, one step at a time.
