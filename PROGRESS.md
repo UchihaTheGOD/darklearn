@@ -293,11 +293,64 @@ reference the new engine is tested against.
    tensor into one row before normalizing (length mismatch error).
    Fixed: normalize per row for 2-d Tensors, flat for 1-d.
 
-### Day 6 — next tasks (Month 3 — tokenizer)
-1. BPE tokenizer from scratch in `darklearn/tokenizer.py`: learn merges
-   from a small corpus, `encode`/`decode`, vocab save/load (JSON).
-2. `TextDataset` variant that takes token ids from the tokenizer
-   (or a `token_ids` mode) instead of chars.
-3. Tokenizer round-trip + merge-learning tests on a tiny corpus.
-4. Example: train the BPE tokenizer on a small text file, print vocab.
-5. Write Day 6 entry in this file. Keep each slice to its own small commit.
+### Day 7 — next tasks (Month 4 — transformer)
+1. `Embedding` module in `nn.py` (token-id lookup, grad flows to rows used) (+ test).
+2. `LayerNorm` module in `nn.py` (per-row mean/var normalize, gamma/beta) (+ test).
+3. Positional encoding helper (sinusoidal, no parameters) (+ test).
+4. Example: embed a BPE-encoded sentence, print shapes.
+5. Write Day 7 entry in this file. Keep each slice to its own small commit.
+
+## Day 6 — 2026-11-21 — v0.1.0-day6 (Month 3 — tokenizer)
+
+### Built
+- `darklearn/tokenizer.py`: byte-level BPE tokenizer from scratch
+  (stdlib only: `json`, `re`). Base vocab = the 256 bytes, so any text
+  encodes with no unknown tokens. `train(corpus, vocab_size=512,
+  min_freq=2)` learns merges word by word (whitespace split, so merges
+  never cross a word boundary): repeatedly merges the most frequent
+  adjacent pair until the vocab cap or no pair meets `min_freq`.
+  Deterministic (ties break by first-seen order). `encode` applies
+  merges in rank order inside each word, whitespace runs stay raw
+  bytes; `decode` is the exact inverse. `save`/`load` JSON
+  (`darklearn-bpe-v1` format, vocab as id -> byte list, merges list).
+- `TextDataset.from_token_ids(ids, seq_len, stride=1)` in `data.py`:
+  same `(input_ids, next_id)` items as the character mode, but the ids
+  come from a tokenizer (e.g. BPE). `vocab_size = max(ids) + 1` for the
+  embedding layer. `encode`/`decode` raise a clear error in this mode
+  (decoding is the tokenizer's job); character mode is unchanged.
+- `tests/test_day6.py`: 7 new tests. `__version__` bumped to `0.1.0-day6`.
+- `examples/train_bpe.py` + `examples/tiny_corpus.txt` (original
+  sentences about darklearn, 873 chars): trains BPE, prints vocab +
+  first merges + a sample encode/decode, builds a token-id
+  `TextDataset` + `DataLoader` batch, saves `bpe_vocab.json` next to
+  the example (generated file, not committed).
+- `BPETokenizer` exported from `darklearn`.
+
+### Test results (2026-11-21, Python 3.12.3, local VM)
+- `python3 tests/test_day6.py` — **7/7 PASS**:
+  `test_bpe_learns_merges`, `test_bpe_roundtrip`, `test_bpe_save_load`,
+  `test_bpe_vocab_size_limit`, `test_bpe_deterministic`,
+  `test_bpe_errors`, `test_text_dataset_from_token_ids`
+- `python3 tests/test_day1.py` — **7/7 PASS** (no regressions)
+- `python3 tests/test_day2.py` — **7/7 PASS** (no regressions)
+- `python3 tests/test_day4.py` — **7/7 PASS** (no regressions)
+- `python3 tests/test_day5.py` — **4/4 PASS** (no regressions)
+- `python3 tests/test_darkcore.py` — **8/8 PASS** (no regressions)
+- Total: **40/40 PASS**
+- `python3 examples/train_mlp.py` — **loss 0.3624 -> 0.0000** (unchanged)
+- `python3 examples/trainer_lite.py` — **loss 0.2364 -> 0.0008** (unchanged)
+- `python3 examples/train_val_split.py` — **train 0.3934 -> 0.0000,
+  val 0.2692 -> 0.0000** (unchanged)
+- `python3 examples/train_bpe.py` — **vocab 320 (256 bytes + 64 merges)**,
+  first merges `he, in, en, ar, or, er, to, an, the, ra`; sample
+  "the model learns to predict the next token" -> 21 tokens for
+  42 chars, round-trip exact; DataLoader batch x (4, 16), y (4, 1)
+
+### Notes
+- First push of the day (tokenizer.py) was interrupted by a service
+  restart mid-call; the branch head was still Day 5's `34f6131d`,
+  so the push had not landed and was safely retried — it then
+  succeeded as `ba1551a9`. No duplicate commit resulted.
+- Design choice: merges are learned within words only, so the space
+  byte is never part of a merged token and whitespace round-trips
+  exactly (tabs, newlines, double spaces all verified in tests).
