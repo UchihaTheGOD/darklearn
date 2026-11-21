@@ -14,6 +14,7 @@ from .optim import (Optimizer, SGD, Adam, AdamW, StepLR, CosineAnnealingLR,
                     clip_grad_norm_)
 from .data import (Dataset, MappedDataset, Subset, TensorDataset,
                  DataLoader, split_dataset, Normalize, TextDataset)
+from .tokenizer import BPETokenizer
 from .darkcore import (Tape, CoreTensor, BufferPool, matmul_tiled,
                        matmul_rows, matmul, fused_linear_relu,
                        fused_sgd_step, C_AVAILABLE, c_available)
@@ -29,6 +30,7 @@ __all__ = [
     "clip_grad_norm_",
     "Dataset", "MappedDataset", "Subset", "TensorDataset", "DataLoader",
     "split_dataset", "Normalize", "TextDataset",
+    "BPETokenizer",
     "Tape", "CoreTensor", "BufferPool", "matmul_tiled", "matmul_rows",
     "matmul", "fused_linear_relu", "fused_sgd_step",
     "C_AVAILABLE", "c_available",
