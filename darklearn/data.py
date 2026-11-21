@@ -134,10 +134,48 @@ class TextDataset(Dataset):
         return (self.ids[start:start + self.seq_len],
                 self.ids[start + self.seq_len])
 
+    @classmethod
+    def from_token_ids(cls, ids, seq_len: int, stride: int = 1):
+        """Build a TextDataset from pre-tokenized ids (e.g. BPE output).
+
+        Same ``(input_ids, next_id)`` items as the character mode, but
+        the ids come from a tokenizer instead of a character vocab.
+        ``decode``/``encode`` are not available in this mode — decode
+        with the tokenizer that produced the ids. ``vocab_size`` is
+        ``max(ids) + 1`` (the tokenizer's vocabulary size when ids
+        cover it), which is what an embedding layer needs.
+        """
+        if seq_len < 1:
+            raise ValueError("TextDataset needs seq_len >= 1")
+        if stride < 1:
+            raise ValueError("TextDataset needs stride >= 1")
+        ids = [int(i) for i in ids]
+        if len(ids) <= seq_len:
+            raise ValueError(
+                f"{len(ids)} token ids must exceed seq_len {seq_len}")
+        self = cls.__new__(cls)
+        self.text = None
+        self.seq_len = int(seq_len)
+        self.stride = int(stride)
+        self.vocab = None
+        self.stoi = None
+        self.itos = None
+        self.ids = ids
+        self.vocab_size = max(ids) + 1
+        return self
+
     def encode(self, text: str):
+        if self.stoi is None:
+            raise ValueError(
+                "token-id TextDataset has no character vocab — "
+                "encode with the tokenizer that produced the ids")
         return [self.stoi[ch] for ch in text]
 
     def decode(self, ids):
+        if self.itos is None:
+            raise ValueError(
+                "token-id TextDataset has no character vocab — "
+                "decode with the tokenizer that produced the ids")
         return "".join(self.itos[i] for i in ids)
 
 
