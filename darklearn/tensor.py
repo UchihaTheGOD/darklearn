@@ -565,6 +565,55 @@ class Tensor:
         out._backward = _bw
         return out
 
+    def layer_norm(self, eps: float = 1e-5) -> "Tensor":
+        """LayerNorm over the last dim (per row for 2-d, whole tensor
+        for 1-d): ``(x - mean) / sqrt(var + eps)`` per row.
+
+        No learnable parameters here — the ``nn.LayerNorm`` module adds
+        gamma / beta on top. Gradient is the standard formula, using
+        the saved normalised values and per-row inverse std:
+        ``dx = inv * (dy - mean(dy) - x_hat * mean(dy * x_hat))``.
+        """
+        if len(self.shape) == 1:
+            slices = [(0, self.numel)]
+        elif len(self.shape) == 2:
+            rows, cols = self.shape
+            slices = [(r * cols, (r + 1) * cols) for r in range(rows)]
+        else:
+            raise ValueError("layer_norm only supports 1-d / 2-d tensors")
+        out_flat = [0.0] * self.numel
+        x_hat = [0.0] * self.numel
+        inv_std: list[float] = []
+        for s, e in slices:
+            n = e - s
+            mean = sum(float(self._data[i]) for i in range(s, e)) / n
+            var = sum((float(self._data[i]) - mean) ** 2
+                      for i in range(s, e)) / n
+            inv = 1.0 / math.sqrt(var + eps)
+            inv_std.append(inv)
+            for i in range(s, e):
+                x_hat[i] = (float(self._data[i]) - mean) * inv
+                out_flat[i] = x_hat[i]
+        out = self._new(out_flat, self.shape, (self,), "layer_norm",
+                        lambda: None)
+
+        def _bw():
+            if out.grad is None or not self.requires_grad:
+                return
+            g_flat = [0.0] * self.numel
+            for k, (s, e) in enumerate(slices):
+                n = e - s
+                inv = inv_std[k]
+                dy = [float(out.grad._data[i]) for i in range(s, e)]
+                xh = x_hat[s:e]
+                mean_dy = sum(dy) / n
+                mean_dy_xh = sum(d * xx for d, xx in zip(dy, xh)) / n
+                for j, i in enumerate(range(s, e)):
+                    g_flat[i] = inv * (dy[j] - mean_dy - xh[j] * mean_dy_xh)
+            self._accum(Tensor(g_flat, shape=self.shape))
+        out._backward = _bw
+        return out
+
     def sum(self) -> "Tensor":
         total = sum(float(x) for x in self._data)
         out = self._new([total], (), (self,), "sum", lambda: None)
@@ -658,3 +707,35 @@ class Tensor:
             out._backward = _bw2
             return out
         raise ValueError("getitem only supports 1-d / 2-d on Day 1")
+
+    def gather_rows(self, indices) -> "Tensor":
+        """Gather rows by index: ``out[i] = self[indices[i]]``.
+
+        Only 2-d. ``indices`` is a list of ints in ``[0, rows)``.
+        Gradient scatter-adds into the parent rows, so a row used
+        twice gets the sum of both grads (what ``nn.Embedding`` needs).
+        """
+        if len(self.shape) != 2:
+            raise ValueError("gather_rows only supports 2-d tensors")
+        rows, cols = self.shape
+        idxs = [int(i) for i in indices]
+        for i in idxs:
+            if not 0 <= i < rows:
+                raise IndexError(f"gather_rows index {i} out of range "
+                                 f"for {rows} rows")
+        out_flat: list[float] = []
+        for i in idxs:
+            start = i * cols
+            out_flat.extend(float(x) for x in self._data[start:start + cols])
+        out = self._new(out_flat, (len(idxs), cols), (self,),
+                        "gather_rows", lambda: None)
+
+        def _bw():
+            if out.grad is not None and self.requires_grad:
+                g = [0.0] * self.numel
+                for r, i in enumerate(idxs):
+                    for c in range(cols):
+                        g[i * cols + c] += float(out.grad._data[r * cols + c])
+                self._accum(Tensor(g, shape=self.shape))
+        out._backward = _bw
+        return out
