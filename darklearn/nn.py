@@ -159,6 +159,93 @@ class Dropout(Module):
         return f"Dropout(p={self.p})"
 
 
+class Embedding(Module):
+    """Token embedding: a lookup table of ``num_embeddings`` rows.
+
+    ``forward(ids)`` takes one token id (int) or a flat list of ids and
+    returns a Tensor of shape ``(len(ids), embedding_dim)`` — one row
+    per token. Gradients flow back to the rows actually used, and a
+    token used twice in one batch gets the sum of both grads.
+    Weights are N(0, 1/sqrt(embedding_dim)) at init.
+
+    Note: darklearn Tensors are 1-d / 2-d, so a (batch, seq) batch is
+    passed in flattened and comes back as (batch*seq, embedding_dim);
+    reshape it on the caller side once 3-d support lands.
+    """
+
+    def __init__(self, num_embeddings: int, embedding_dim: int,
+                 seed: int | None = None):
+        super().__init__()
+        if num_embeddings <= 0 or embedding_dim <= 0:
+            raise ValueError("Embedding sizes must be positive")
+        self.num_embeddings = num_embeddings
+        self.embedding_dim = embedding_dim
+        w = Tensor.randn((num_embeddings, embedding_dim), seed=seed,
+                         requires_grad=True)
+        scale = 1.0 / math.sqrt(embedding_dim)
+        for i in range(w.numel):
+            w._data[i] *= scale
+        self.weight = w
+
+    def forward(self, ids) -> Tensor:
+        if isinstance(ids, int):
+            ids = [ids]
+        ids = [int(i) for i in ids]
+        return self.weight.gather_rows(ids)
+
+    def __repr__(self):
+        return (f"Embedding({self.num_embeddings}, "
+                f"{self.embedding_dim})")
+
+
+class LayerNorm(Module):
+    """Layer normalisation over the last dim of a 2-d input (per row).
+
+    ``y = gamma * (x - mean) / sqrt(var + eps) + beta``, with
+    learnable per-feature ``gamma`` (init 1) and ``beta`` (init 0).
+    Built on ``Tensor.layer_norm`` plus the existing broadcast ops,
+    so autograd flows to x, gamma and beta.
+    """
+
+    def __init__(self, normalized_shape: int, eps: float = 1e-5):
+        super().__init__()
+        if normalized_shape <= 0:
+            raise ValueError("LayerNorm normalized_shape must be positive")
+        self.normalized_shape = int(normalized_shape)
+        self.eps = float(eps)
+        self.gamma = Tensor.ones((normalized_shape,), requires_grad=True)
+        self.beta = Tensor.zeros((normalized_shape,), requires_grad=True)
+
+    def forward(self, x: Tensor) -> Tensor:
+        if len(x.shape) != 2 or x.shape[1] != self.normalized_shape:
+            raise ValueError(
+                f"LayerNorm({self.normalized_shape}) needs 2-d input with "
+                f"{self.normalized_shape} features, got shape {x.shape}")
+        return x.layer_norm(self.eps) * self.gamma + self.beta
+
+    def __repr__(self):
+        return f"LayerNorm({self.normalized_shape}, eps={self.eps})"
+
+
+def sinusoidal_positional_encoding(seq_len: int, d_model: int) -> Tensor:
+    """Sinusoidal positional encoding (Vaswani et al., 2017), no params.
+
+    ``PE[pos, 2i] = sin(pos / 10000^(2i/d_model))`` and
+    ``PE[pos, 2i+1] = cos(pos / 10000^(2i/d_model))``.
+    Returns a (seq_len, d_model) Tensor; add it to token embeddings
+    (``emb + sinusoidal_positional_encoding(len, d)``).
+    """
+    if seq_len <= 0 or d_model <= 0:
+        raise ValueError("sinusoidal_positional_encoding sizes must be positive")
+    flat: list[float] = []
+    for pos in range(seq_len):
+        for i in range(d_model):
+            denom = 10000.0 ** (2 * (i // 2) / d_model)
+            angle = pos / denom
+            flat.append(math.sin(angle) if i % 2 == 0 else math.cos(angle))
+    return Tensor(flat, shape=(seq_len, d_model))
+
+
 class Sequential(Module):
     def __init__(self, *layers: Module):
         super().__init__()
@@ -240,4 +327,5 @@ class BCELoss(Module):
 
 
 __all__ = ["Module", "Linear", "ReLU", "Tanh", "Sigmoid", "GELU", "Dropout",
+           "Embedding", "LayerNorm", "sinusoidal_positional_encoding",
            "Sequential", "MSELoss", "mse_loss", "CrossEntropyLoss", "BCELoss"]
