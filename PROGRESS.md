@@ -354,3 +354,73 @@ reference the new engine is tested against.
 - Design choice: merges are learned within words only, so the space
   byte is never part of a merged token and whitespace round-trips
   exactly (tabs, newlines, double spaces all verified in tests).
+
+## Day 7 — 2026-11-22 — v0.1.0-day7 (Month 4 — transformer)
+
+### Built
+- `Tensor.gather_rows(indices)` in `tensor.py`: row gather for 2-d
+  tensors, `out[i] = self[indices[i]]`. Backward scatter-adds grads,
+  so a row used twice gets the sum of both grads. Out-of-range ids
+  raise IndexError.
+- `Tensor.layer_norm(eps=1e-5)` in `tensor.py`: per-row
+  `(x - mean) / sqrt(var + eps)` for 2-d, whole-tensor for 1-d.
+  Backward is the standard formula using saved normalised values and
+  per-row inverse std; gradchecked on a 1-d input.
+- `Embedding` in `nn.py`: lookup table `(num_embeddings, dim)`,
+  N(0, 1/sqrt(dim)) init. `forward(ids)` takes one int or a flat list
+  of ids and returns `(len(ids), dim)`. Note: darklearn Tensors are
+  1-d/2-d only, so a (batch, seq) batch is passed in flattened and
+  comes back as (batch*seq, dim).
+- `LayerNorm` in `nn.py`: per-row normalisation with learnable gamma
+  (init 1) and beta (init 0), built on `Tensor.layer_norm` + the
+  existing (m, n) + (n,) broadcast.
+- `sinusoidal_positional_encoding(seq_len, d_model)` in `nn.py`:
+  `sin(pos / 10000^(2i/d))` on even dims, `cos(...)` on odd dims, no
+  parameters. Returns a (seq_len, d_model) Tensor to add to embeddings.
+- `tests/test_day7.py`: 7 new tests. `__version__` bumped to `0.1.0-day7`.
+- `examples/embed_sentence.py`: BPE-encodes "the model learns to
+  predict the next token" (21 tokens), embeds with d_model=16, adds
+  sinusoidal positions, prints shapes.
+- `Embedding`, `LayerNorm`, `sinusoidal_positional_encoding` exported
+  from `darklearn`.
+
+### Test results (2026-11-22, Python 3.12.3, local VM)
+- `python3 tests/test_day7.py` — **7/7 PASS**:
+  `test_embedding_forward`, `test_embedding_grad`,
+  `test_layernorm_forward`, `test_layernorm_gradcheck`,
+  `test_layernorm_gamma_beta`, `test_positional_encoding`,
+  `test_embedding_trains`
+- `python3 tests/test_day1.py` — **7/7 PASS** (no regressions)
+- `python3 tests/test_day2.py` — **7/7 PASS** (no regressions)
+- `python3 tests/test_day4.py` — **7/7 PASS** (no regressions)
+- `python3 tests/test_day5.py` — **4/4 PASS** (no regressions)
+- `python3 tests/test_day6.py` — **7/7 PASS** (no regressions)
+- `python3 tests/test_darkcore.py` — **8/8 PASS** (no regressions)
+- Total: **47/47 PASS**
+- `python3 examples/train_mlp.py` — **loss 0.3624 -> 0.0000** (unchanged)
+- `python3 examples/trainer_lite.py` — **loss 0.2364 -> 0.0008** (unchanged)
+- `python3 examples/train_val_split.py` — **train 0.3934 -> 0.0000,
+  val 0.2692 -> 0.0000** (unchanged)
+- `python3 examples/train_bpe.py` — **vocab 320**, batch x (4, 16) (unchanged)
+- `python3 examples/embed_sentence.py` — **21 tokens -> (21, 16)
+  embeddings + (21, 16) positions**, decode round-trip exact
+- `test_embedding_trains`: embedding + Linear head learns token parity
+  (even -> 1, odd -> 0) in 150 Adam steps; same-parity embeddings end
+  up closer than cross-parity.
+
+### Bugs fixed during Day 7
+1. Test bug: `test_layernorm_forward` asserted unit variance for the
+   constant row too — a constant row normalises to all zeros, so its
+   variance is 0, not 1. Fixed the test to check variance only on the
+   non-constant row.
+
+### Day 8 — next tasks (Month 4 — transformer)
+1. `Tensor.softmax` already exists — add scaled dot-product attention
+   helper (scores = Q @ K.T / sqrt(d), causal mask option) (+ test).
+2. `MultiHeadAttention` module in `nn.py` (Q/K/V projections, split
+   heads, concat, output projection) (+ test, gradcheck on 1 head).
+3. `TransformerBlock` in `nn.py` (attention + MLP + 2x LayerNorm,
+   residual connections) (+ test).
+4. Example: tiny GPT-style forward pass on a BPE-encoded sentence,
+   print shapes per block.
+5. Write Day 8 entry in this file. Keep each slice to its own small commit.
