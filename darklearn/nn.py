@@ -246,6 +246,136 @@ def sinusoidal_positional_encoding(seq_len: int, d_model: int) -> Tensor:
     return Tensor(flat, shape=(seq_len, d_model))
 
 
+def scaled_dot_product_attention(q: Tensor, k: Tensor, v: Tensor,
+                                 causal: bool = False) -> Tensor:
+    """Scaled dot-product attention (Vaswani et al., 2017).
+
+    ``q``, ``k``, ``v`` are (seq, d) 2-d tensors (one sequence, rows
+    are positions). Returns ``softmax(q @ k.T / sqrt(d_k)) @ v``,
+    shape (seq, d_v). With ``causal=True`` position ``i`` may only
+    attend to positions ``<= i`` (the causal mask is a constant
+    tensor added to the scores, so no grad flows through it).
+
+    Built only from Tensor ops (matmul, add, softmax), so autograd
+    flows to q, k and v.
+    """
+    if len(q.shape) != 2 or len(k.shape) != 2 or len(v.shape) != 2:
+        raise ValueError("scaled_dot_product_attention needs 2-d q/k/v")
+    seq_q, d_k = q.shape
+    seq_k, d_k2 = k.shape
+    seq_v, d_v = v.shape
+    if d_k != d_k2 or seq_k != seq_v:
+        raise ValueError(f"attention shape mismatch: q {q.shape}, "
+                         f"k {k.shape}, v {v.shape}")
+    scores = (q @ k.T) * (1.0 / math.sqrt(d_k))
+    if causal:
+        mask = [0.0 if c <= r else -1e9
+                for r in range(seq_q) for c in range(seq_k)]
+        scores = scores + Tensor(mask, shape=(seq_q, seq_k))
+    weights = scores.softmax(dim=-1)
+    return weights @ v
+
+
+class MultiHeadAttention(Module):
+    """Multi-head self-attention over a (seq, d_model) input.
+
+    One Linear(d_model, d_model) projection each for Q, K, V, plus
+    an output Linear(d_model, d_model). Heads split the projections
+    by columns (``Tensor.narrow``): head ``h`` works on columns
+    ``[h*d_head, (h+1)*d_head)``. The concatenated heads are never
+    materialised: ``out = sum_h head_out_h @ W_out[h-block, :] +
+    b_out``, which is exactly ``concat(heads) @ W_out.T + b_out``,
+    built only from matmul/add so autograd flows to every
+    projection. ``causal=True`` (or the constructor default) masks
+    future positions inside each head.
+    """
+
+    def __init__(self, d_model: int, num_heads: int,
+                 seed: int | None = None, causal: bool = False):
+        super().__init__()
+        if d_model <= 0 or num_heads <= 0:
+            raise ValueError("MultiHeadAttention sizes must be positive")
+        if d_model % num_heads != 0:
+            raise ValueError(f"d_model {d_model} must be divisible by "
+                             f"num_heads {num_heads}")
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.d_head = d_model // num_heads
+        self.causal = bool(causal)
+        seeds = [None] * 4 if seed is None else [seed + i for i in range(4)]
+        self.q_proj = Linear(d_model, d_model, seed=seeds[0])
+        self.k_proj = Linear(d_model, d_model, seed=seeds[1])
+        self.v_proj = Linear(d_model, d_model, seed=seeds[2])
+        self.out_proj = Linear(d_model, d_model, seed=seeds[3])
+
+    def forward(self, x: Tensor, causal: bool | None = None) -> Tensor:
+        if len(x.shape) != 2 or x.shape[1] != self.d_model:
+            raise ValueError(
+                f"MultiHeadAttention({self.d_model}) needs 2-d input "
+                f"with {self.d_model} features, got shape {x.shape}")
+        if causal is None:
+            causal = self.causal
+        q = self.q_proj(x)
+        k = self.k_proj(x)
+        v = self.v_proj(x)
+        out = None
+        for h in range(self.num_heads):
+            s = h * self.d_head
+            head = scaled_dot_product_attention(
+                q.narrow(1, s, self.d_head),
+                k.narrow(1, s, self.d_head),
+                v.narrow(1, s, self.d_head), causal=causal)
+            # head (seq, d_head) @ W_out rows [s:s+d_head] (d_head, d_model)
+            contrib = head @ self.out_proj.weight.narrow(0, s, self.d_head)
+            out = contrib if out is None else out + contrib
+        return out + self.out_proj.bias
+
+    def __repr__(self):
+        return (f"MultiHeadAttention(d_model={self.d_model}, "
+                f"num_heads={self.num_heads}, causal={self.causal})")
+
+
+class TransformerBlock(Module):
+    """One pre-norm transformer block: attention + MLP, each with a
+    residual connection.
+
+    ``x -> x + attn(ln1(x)) -> x + mlp(ln2(x))`` where the MLP is
+    ``Linear(d, 4d) -> GELU -> Linear(4d, d)`` (``ffn_mult`` scales
+    the hidden size). Dropout (default p=0, off) applies after each
+    sub-layer. Causal masking is passed through to the attention.
+    """
+
+    def __init__(self, d_model: int, num_heads: int,
+                 seed: int | None = None, causal: bool = False,
+                 ffn_mult: int = 4, dropout: float = 0.0):
+        super().__init__()
+        self.d_model = d_model
+        self.causal = bool(causal)
+        self.attn = MultiHeadAttention(d_model, num_heads, seed=seed,
+                                       causal=causal)
+        self.ln1 = LayerNorm(d_model)
+        self.ln2 = LayerNorm(d_model)
+        seeds = [None] * 2 if seed is None else [seed + 10, seed + 11]
+        self.mlp = Sequential(
+            Linear(d_model, ffn_mult * d_model, seed=seeds[0]),
+            GELU(),
+            Linear(ffn_mult * d_model, d_model, seed=seeds[1]),
+        )
+        self.drop = Dropout(dropout, seed=None if seed is None else seed + 12)
+
+    def forward(self, x: Tensor, causal: bool | None = None) -> Tensor:
+        if causal is None:
+            causal = self.causal
+        x = x + self.drop(self.attn(self.ln1(x), causal=causal))
+        x = x + self.drop(self.mlp(self.ln2(x)))
+        return x
+
+    def __repr__(self):
+        return (f"TransformerBlock(d_model={self.d_model}, "
+                f"num_heads={self.attn.num_heads}, "
+                f"causal={self.causal})")
+
+
 class Sequential(Module):
     def __init__(self, *layers: Module):
         super().__init__()
@@ -328,4 +458,6 @@ class BCELoss(Module):
 
 __all__ = ["Module", "Linear", "ReLU", "Tanh", "Sigmoid", "GELU", "Dropout",
            "Embedding", "LayerNorm", "sinusoidal_positional_encoding",
+           "scaled_dot_product_attention", "MultiHeadAttention",
+           "TransformerBlock",
            "Sequential", "MSELoss", "mse_loss", "CrossEntropyLoss", "BCELoss"]
