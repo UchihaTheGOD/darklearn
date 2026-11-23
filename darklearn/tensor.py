@@ -739,3 +739,73 @@ class Tensor:
                 self._accum(Tensor(g, shape=self.shape))
         out._backward = _bw
         return out
+
+    def narrow(self, dim: int, start: int, length: int) -> "Tensor":
+        """Slice a contiguous block along ``dim``: ``out`` is
+        ``self`` with ``length`` entries starting at ``start``.
+
+        1-d: ``dim`` must be 0. 2-d: ``dim`` 0 slices rows, 1 slices
+        columns. Gradient scatters back into the parent (zeros
+        outside the block) — what splits a Q/K/V projection into
+        attention heads, and a weight matrix into per-head blocks.
+        """
+        if len(self.shape) == 1:
+            if dim != 0:
+                raise ValueError(f"narrow dim {dim} out of range for 1-d")
+            n = self.shape[0]
+            if not 0 <= start and start + length <= n and length >= 0:
+                raise IndexError(f"narrow(0, {start}, {length}) out of "
+                                 f"range for length {n}")
+            out_flat = [float(x) for x in self._data[start:start + length]]
+            out = self._new(out_flat, (length,), (self,), "narrow",
+                            lambda: None)
+
+            def _bw1():
+                if out.grad is not None and self.requires_grad:
+                    g = [0.0] * self.numel
+                    for i in range(length):
+                        g[start + i] = float(out.grad._data[i])
+                    self._accum(Tensor(g, shape=self.shape))
+            out._backward = _bw1
+            return out
+        if len(self.shape) == 2:
+            rows, cols = self.shape
+            n = rows if dim == 0 else cols if dim == 1 else -1
+            if n < 0:
+                raise ValueError(f"narrow dim {dim} out of range for 2-d")
+            if not 0 <= start and start + length <= n and length >= 0:
+                raise IndexError(f"narrow({dim}, {start}, {length}) out "
+                                 f"of range for size {n}")
+            if dim == 0:
+                out_flat = []
+                for r in range(start, start + length):
+                    out_flat.extend(float(x) for x in
+                                    self._data[r * cols:(r + 1) * cols])
+                out_shape = (length, cols)
+            else:
+                out_flat = []
+                for r in range(rows):
+                    base = r * cols
+                    out_flat.extend(float(self._data[base + c])
+                                    for c in range(start, start + length))
+                out_shape = (rows, length)
+            out = self._new(out_flat, out_shape, (self,), "narrow",
+                            lambda: None)
+
+            def _bw2():
+                if out.grad is not None and self.requires_grad:
+                    g = [0.0] * self.numel
+                    if dim == 0:
+                        for r in range(length):
+                            for c in range(cols):
+                                g[(start + r) * cols + c] = float(
+                                    out.grad._data[r * cols + c])
+                    else:
+                        for r in range(rows):
+                            for c in range(length):
+                                g[r * cols + start + c] = float(
+                                    out.grad._data[r * length + c])
+                    self._accum(Tensor(g, shape=self.shape))
+            out._backward = _bw2
+            return out
+        raise ValueError("narrow only supports 1-d / 2-d tensors")
