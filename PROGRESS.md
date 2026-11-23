@@ -424,3 +424,75 @@ reference the new engine is tested against.
 4. Example: tiny GPT-style forward pass on a BPE-encoded sentence,
    print shapes per block.
 5. Write Day 8 entry in this file. Keep each slice to its own small commit.
+
+## Day 8 — 2026-11-23 — v0.1.0-day8 (Month 4 — transformer)
+
+### Built
+- `Tensor.narrow(dim, start, length)` in `tensor.py`: contiguous
+  slice along dim 0 (rows) or 1 (columns) for 2-d, dim 0 for 1-d.
+  Backward scatters the grad back into the parent (zeros outside
+  the block). What splits a Q/K/V projection into attention heads
+  and a weight matrix into per-head blocks.
+- `scaled_dot_product_attention(q, k, v, causal=False)` in `nn.py`:
+  `softmax(Q @ K.T / sqrt(d_k)) @ V` for (seq, d) inputs. Causal
+  mask is a constant tensor (0 / -1e9) added to the scores, so no
+  grad flows through it. Built only from Tensor ops.
+- `MultiHeadAttention` in `nn.py`: one Linear(d_model, d_model)
+  projection each for Q/K/V plus an output Linear. Heads split the
+  projections by columns via `narrow`; the concatenated heads are
+  never materialised — `out = sum_h head_out_h @ W_out[h-block, :] +
+  b_out`, exactly `concat(heads) @ W_out.T + b_out`. Seeded
+  projections use seed, seed+1, seed+2, seed+3 (same seed for all
+  four would give identical Q/K/V weights).
+- `TransformerBlock` in `nn.py`: pre-norm block, `x + attn(ln1(x))`
+  then `x + mlp(ln2(x))`, MLP is Linear(d, 4d) -> GELU ->
+  Linear(4d, d), optional Dropout (default off), causal flag passed
+  through to attention.
+- `tests/test_day8.py`: 11 new tests. `__version__` bumped to
+  `0.1.0-day8`.
+- `examples/tiny_gpt.py`: BPE-encodes "the model learns to predict
+  the next token" (15 tokens), Embedding(281, 16) + positions, 2
+  causal TransformerBlocks, Linear head; prints shapes per block,
+  then trains next-token prediction for 80 Adam steps.
+- `Embedding`, `LayerNorm`, `scaled_dot_product_attention`,
+  `MultiHeadAttention`, `TransformerBlock` exported from `darklearn`.
+
+### Test results (2026-11-23, Python 3.12.3, local VM)
+- `python3 tests/test_day8.py` — **11/11 PASS**:
+  `test_narrow_rows_cols`, `test_narrow_grad`,
+  `test_sdpa_forward`, `test_sdpa_causal`, `test_sdpa_grad`,
+  `test_mha_forward`, `test_mha_causal`, `test_mha_grad`,
+  `test_block_forward`, `test_block_causal_and_grad`,
+  `test_tiny_gpt_trains`
+- `python3 tests/test_day1.py` — **7/7 PASS** (no regressions)
+- `python3 tests/test_day2.py` — **7/7 PASS** (no regressions)
+- `python3 tests/test_day4.py` — **7/7 PASS** (no regressions)
+- `python3 tests/test_day5.py` — **4/4 PASS** (no regressions)
+- `python3 tests/test_day6.py` — **7/7 PASS** (no regressions)
+- `python3 tests/test_day7.py` — **7/7 PASS** (no regressions)
+- `python3 tests/test_darkcore.py` — **8/8 PASS** (no regressions)
+- Total: **58/58 PASS**
+- `python3 examples/train_mlp.py` — **loss 0.3624 -> 0.0000** (unchanged)
+- `python3 examples/trainer_lite.py` — **loss 0.2364 -> 0.0008** (unchanged)
+- `python3 examples/train_val_split.py` — **train 0.3934 -> 0.0000,
+  val 0.2692 -> 0.0000** (unchanged)
+- `python3 examples/train_bpe.py` — **vocab 320**, batch x (4, 16) (unchanged)
+- `python3 examples/embed_sentence.py` — **21 tokens -> (21, 16)
+  embeddings + (21, 16) positions** (unchanged)
+- `python3 examples/tiny_gpt.py` — **15 tokens -> (15, 16) per
+  block, logits (15, 281); next-token loss 11.2851 -> 0.0001** in
+  80 Adam steps (~15s)
+- Strongest checks: causal tests prove changing rows 1.. never
+  moves output row 0, through SDPA, MHA and the full block; the
+  SDPA grad matches finite differences on one q element; the
+  tiny-GPT training test drops loss below 1.0 in 60 steps.
+
+### Day 9 — next tasks (Month 4 — transformer)
+1. Greedy + sampling text generation from the tiny GPT
+   (`generate()` helper: greedy argmax, temperature + top-k sampling).
+2. Overfit-a-tiny-corpus test: train the tiny GPT until it
+   reproduces a short sentence from its own generation.
+3. Attention gradcheck on a 1-head MHA (numeric vs analytic on a
+   small case).
+4. Example: generate text from the trained tiny GPT.
+5. Write Day 9 entry in this file. Keep each slice to its own small commit.
