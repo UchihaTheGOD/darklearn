@@ -496,3 +496,81 @@ reference the new engine is tested against.
    small case).
 4. Example: generate text from the trained tiny GPT.
 5. Write Day 9 entry in this file. Keep each slice to its own small commit.
+
+## Day 9 — 2026-11-24 — v0.1.0-day9 (Month 4 — generation)
+
+### Built
+- `darklearn/generate.py`: `generate(model, prompt_ids, ...)` —
+  any callable `model(ids) -> Tensor` of shape `(seq, vocab)` can
+  generate text. Greedy argmax (first max on ties); sampling
+  divides logits by `temperature`, optionally keeps only the
+  `top_k` largest logits, softmaxes, and draws with
+  `random.Random(seed)` so a fixed seed reproduces the run.
+  `eos_id` stops generation early; `max_new_tokens=0` returns the
+  prompt unchanged; the prompt list is never mutated. Input
+  validation (method, temperature > 0, top_k >= 1, non-empty
+  prompt, non-negative `max_new_tokens`, model must return
+  (len(ids), vocab) logits) all raise ValueError. No gradients are
+  needed during generation — only the last logits row is read.
+- `tests/test_day9.py`: 8 new tests. `__version__` bumped to
+  `0.1.0-day9`.
+- `examples/generate_text.py`: trains the Day 8 tiny GPT (80 Adam
+  steps), greedy-generates the sentence back from "the model",
+  and samples a continuation (t=0.8, top-k=5, seed=7).
+- `generate` exported from `darklearn`.
+
+### Test results (2026-11-24, Python 3.12.3, local VM)
+- `python3 tests/test_day9.py` — **8/8 PASS**:
+  `test_generate_greedy`, `test_generate_eos`,
+  `test_generate_sample_reproducible`,
+  `test_generate_sample_low_temperature`, `test_generate_top_k`,
+  `test_generate_errors`, `test_mha_one_head_gradcheck`,
+  `test_overfit_tiny_corpus`
+- `python3 tests/test_day1.py` — **7/7 PASS** (no regressions)
+- `python3 tests/test_day2.py` — **7/7 PASS** (no regressions)
+- `python3 tests/test_day4.py` — **7/7 PASS** (no regressions)
+- `python3 tests/test_day5.py` — **4/4 PASS** (no regressions)
+- `python3 tests/test_day6.py` — **7/7 PASS** (no regressions)
+- `python3 tests/test_day7.py` — **7/7 PASS** (no regressions)
+- `python3 tests/test_day8.py` — **11/11 PASS** (no regressions)
+- `python3 tests/test_darkcore.py` — **8/8 PASS** (no regressions)
+- Total: **66/66 PASS**
+- `python3 examples/train_mlp.py` — **loss 0.3624 -> 0.0000** (unchanged)
+- `python3 examples/trainer_lite.py` — **loss 0.2364 -> 0.0008** (unchanged)
+- `python3 examples/train_val_split.py` — **train 0.3934 -> 0.0000,
+  val 0.2692 -> 0.0000** (unchanged)
+- `python3 examples/train_bpe.py` — **vocab 320**, batch x (4, 16) (unchanged)
+- `python3 examples/embed_sentence.py` — **21 tokens -> (21, 16)
+  embeddings + (21, 16) positions** (unchanged)
+- `python3 examples/tiny_gpt.py` — **15 tokens -> (15, 16) per
+  block, logits (15, 281); next-token loss 11.2851 -> 0.0001** (unchanged)
+- `python3 examples/generate_text.py` — **greedy reproduces
+  "the model learns to predict the next token" exactly** from the
+  prompt "the model"; sampled (t=0.8, top-k=5, seed=7):
+  "the model learns to predict the next" (a different final token,
+  as expected from sampling)
+- Strongest checks: the 1-head MHA gradcheck passes numeric vs
+  analytic grads through the whole module (Q/K/V projections,
+  per-head attention, output projection); the overfit test trains
+  "the cat sat" (5 tokens) to loss 0.0002 in 120 steps and greedy
+  generation from its first 2 tokens reproduces it exactly.
+
+### Bugs fixed during Day 9
+1. Import bug (twice): `from darklearn import generate` returned
+   the `darklearn.generate` *module*, not the function, because the
+   module and the function share a name. Fixed by importing the
+   function from the submodule (`from darklearn.generate import
+   generate`) in the test and example; after the `__init__.py`
+   export, `from darklearn import generate` also resolves to the
+   function (verified).
+
+### Day 10 — next tasks (Month 5 — LLM training loop)
+1. `Trainer` upgrade: eval loop + perplexity metric in `examples/`
+   or a `darklearn/trainer.py` (epochs, batches, logging, eval).
+2. Checkpoint save/load for weights (`pickle`/`json`, stdlib only)
+   (+ test: save, reload, identical outputs).
+3. Gradient accumulation helper (+ test).
+4. Early stopping on val loss (+ test).
+5. Example: train the tiny GPT on the tiny corpus with the Trainer
+   + checkpoint, reload, and generate from it.
+6. Write Day 10 entry in this file. Keep each slice to its own small commit.
