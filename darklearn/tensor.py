@@ -809,3 +809,94 @@ class Tensor:
             out._backward = _bw2
             return out
         raise ValueError("narrow only supports 1-d / 2-d tensors")
+
+    @classmethod
+    def cat(cls, tensors, dim: int = 0) -> "Tensor":
+        """Concatenate tensors along ``dim`` (the inverse of ``narrow``).
+
+        1-d: ``dim`` must be 0 (flat concat). 2-d: ``dim`` 0 stacks
+        rows (all inputs need the same column count), ``dim`` 1 joins
+        columns (same row count). Gradient slices back into each
+        input — what stacks per-row logits into one batch tensor.
+        """
+        tensors = list(tensors)
+        if not tensors:
+            raise ValueError("cat needs at least one tensor")
+        for t in tensors:
+            if not isinstance(t, Tensor):
+                raise ValueError(f"cat needs Tensors, got {type(t).__name__}")
+        ndim = len(tensors[0].shape)
+        if ndim not in (1, 2):
+            raise ValueError(f"cat only supports 1-d / 2-d, "
+                             f"got shape {tensors[0].shape}")
+        for t in tensors[1:]:
+            if len(t.shape) != ndim:
+                raise ValueError("cat needs all tensors to have the "
+                                 f"same ndim, got {tensors[0].shape} "
+                                 f"vs {t.shape}")
+        if ndim == 1:
+            if dim != 0:
+                raise ValueError(f"cat dim {dim} out of range for 1-d")
+            out_flat = [float(x) for t in tensors for x in t._data]
+            out_shape = (sum(t.shape[0] for t in tensors),)
+            sizes = [t.shape[0] for t in tensors]
+        else:
+            if dim not in (0, 1):
+                raise ValueError(f"cat dim {dim} out of range for 2-d")
+            if dim == 0:
+                cols = tensors[0].shape[1]
+                for t in tensors[1:]:
+                    if t.shape[1] != cols:
+                        raise ValueError(
+                            "cat dim=0 needs matching column counts, "
+                            f"got {tensors[0].shape} vs {t.shape}")
+                out_flat = [float(x) for t in tensors for x in t._data]
+                out_shape = (sum(t.shape[0] for t in tensors), cols)
+                sizes = [t.shape[0] * cols for t in tensors]
+            else:
+                rows = tensors[0].shape[0]
+                for t in tensors[1:]:
+                    if t.shape[0] != rows:
+                        raise ValueError(
+                            "cat dim=1 needs matching row counts, "
+                            f"got {tensors[0].shape} vs {t.shape}")
+                out_flat = []
+                for r in range(rows):
+                    for t in tensors:
+                        cols = t.shape[1]
+                        base = r * cols
+                        out_flat.extend(float(x) for x in
+                                        t._data[base:base + cols])
+                out_shape = (rows, sum(t.shape[1] for t in tensors))
+                sizes = None  # dim=1 slices per row, handled below
+        out = tensors[0]._new(out_flat, out_shape, tuple(tensors),
+                              "cat", lambda: None)
+
+        def _bw():
+            if out.grad is None:
+                return
+            if ndim == 1 or dim == 0:
+                offset = 0
+                for t, n in zip(tensors, sizes):
+                    if t.requires_grad:
+                        g = [float(x) for x in
+                             out.grad._data[offset:offset + n]]
+                        t._accum(Tensor(g, shape=t.shape))
+                    offset += n
+            else:  # 2-d, dim == 1
+                rows, out_cols = out_shape
+                offset = 0
+                for t in tensors:
+                    cols = t.shape[1]
+                    if t.requires_grad:
+                        g = [0.0] * t.numel
+                        for r in range(rows):
+                            src = r * out_cols + offset
+                            dst = r * cols
+                            for c in range(cols):
+                                g[dst + c] = float(
+                                    out.grad._data[src + c])
+                        t._accum(Tensor(g, shape=t.shape))
+                    offset += cols
+        out._backward = _bw
+        return out
