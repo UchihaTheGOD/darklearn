@@ -574,3 +574,102 @@ reference the new engine is tested against.
 5. Example: train the tiny GPT on the tiny corpus with the Trainer
    + checkpoint, reload, and generate from it.
 6. Write Day 10 entry in this file. Keep each slice to its own small commit.
+
+## Day 10 — 2026-11-25 — v0.1.0-day10 (Month 5 — training loop + checkpoints)
+
+### Built
+- `Tensor.cat(tensors, dim=0)` in `tensor.py`: concat for 1-d (flat)
+  and 2-d (dim 0 stacks rows, dim 1 joins columns); backward slices
+  grads back into each input. Needed to stack per-row logits into
+  one batch tensor for the LM example. Gradchecked + explicit grad
+  test; shape mismatches raise ValueError.
+- `Module.named_parameters()` in `nn.py`: dotted names
+  (`"fc1.weight"`, `"layers.0.bias"`, `"attn.q_proj.weight"`),
+  same order as `parameters()` (verified on MLP + TransformerBlock).
+  Checkpoint keys use these names.
+- `darklearn/trainer.py`: library `Trainer` — epochs over a
+  DataLoader, eval loop, `evaluate()`, `perplexity()` (exp of mean
+  loss), gradient accumulation (`accum_steps`, loss divided before
+  backward, optimizer steps every N micro-batches), per-epoch LR
+  scheduler, `max_grad_norm` clipping before each step, `batch_fn`
+  hook to reshape batches (what the LM example uses). `EarlyStopping`
+  (patience, min_delta, min/max mode) snapshots the best weights in
+  memory and restores them on stop. Supersedes
+  `examples/trainer_lite.py` (kept, docstring now points here).
+- Optimizer state in `optim.py`: `state_dict()` / `load_state_dict()`
+  on `Optimizer` (lr), `SGD` (velocity), `Adam`/`AdamW` (step count
+  `t`, first/second moments), keyed by param index so a round-trip
+  restores exactly.
+- `darklearn/checkpoint.py`: `state_dict(model)` /
+  `load_state_dict(model, state)` (strict — unknown/missing keys and
+  shape mismatches raise ValueError, weights copied in place so the
+  optimizer keeps working), `save_checkpoint` / `load_checkpoint`
+  with stdlib `pickle` (`darklearn-checkpoint-v1` format: weights +
+  optimizer state + epoch + extra metadata). No tensors, no numpy.
+- `examples/train_tiny_lm.py`: `TinyGPT` (a `Module` whose forward
+  takes a token list or a (batch, seq) id Tensor), BPE corpus (113
+  tokens), token-id `TextDataset` (seq_len 8, stride 1), 80/20 split,
+  Trainer + early stopping, checkpoint to
+  `examples/checkpoints/tiny_lm.pt` (gitignored), reload into a fresh
+  model, generate from both.
+- `Trainer`, `EarlyStopping`, `state_dict`, `load_state_dict`,
+  `save_checkpoint`, `load_checkpoint` exported from `darklearn`;
+  `__version__` bumped to `0.1.0-day10`.
+- `tests/test_day10.py`: 8 new tests.
+
+### Test results (2026-11-25, Python 3.12.3, local VM)
+- `python3 tests/test_day10.py` — **8/8 PASS**:
+  `test_tensor_cat`, `test_tensor_cat_grad`,
+  `test_named_parameters`, `test_trainer_fit_and_eval`,
+  `test_trainer_grad_accumulation`, `test_trainer_early_stopping`,
+  `test_checkpoint_save_load`, `test_checkpoint_resume_matches`
+- Full suite: **74/74 PASS** (Day 1: 7, Day 2: 7, Day 4: 7, Day 5: 4,
+  Day 6: 7, Day 7: 7, Day 8: 11, Day 9: 8, DarkCore: 8, Day 10: 8)
+- `python3 examples/train_mlp.py` — **loss 0.3624 -> 0.0000** (unchanged)
+- `python3 examples/trainer_lite.py` — **loss 0.2364 -> 0.0008** (unchanged)
+- `python3 examples/train_val_split.py` — **train 0.3934 -> 0.0000,
+  val 0.2692 -> 0.0000** (unchanged)
+- `python3 examples/train_bpe.py` — **vocab 320** (unchanged)
+- `python3 examples/embed_sentence.py` — **21 tokens -> (21, 16)** (unchanged)
+- `python3 examples/tiny_gpt.py` — **loss 11.2851 -> 0.0001** (unchanged)
+- `python3 examples/generate_text.py` — **greedy reproduces the
+  sentence** (unchanged)
+- `python3 examples/train_tiny_lm.py` — **train loss 10.1170 ->
+  0.8683 in 11 epochs (~72s), val perplexity 1.00 after restore**;
+  checkpoint saved + reloaded (epoch 11, extra val_perplexity
+  1.0002); reloaded model generates byte-identically to the trained
+  one.
+- Strongest check: `test_checkpoint_resume_matches` — 6 epochs
+  straight vs 3 epochs + save + reload + 3 more gives the same final
+  loss (0.0180) and byte-identical weights; `test_trainer_grad_accumulation`
+  counts optimizer steps (4 steps for 8 micro-batches at accum=2).
+
+### Honest notes
+- Early stopping earned its keep in the example: val loss hit
+  ~0.0000 at epoch 10, then one more Adam epoch at lr=0.05 bounced
+  it to 3.78 (Adam keeps taking ~lr-sized steps near the minimum).
+  The restore put the epoch-10 weights back, so the reported val
+  perplexity (1.00) is measured on the restored model, not the last
+  history entry — the example re-evaluates after `fit()` for exactly
+  this reason.
+- Free-running greedy generation still drifts: "the model learns
+  predict predict predict" instead of the full sentence. The model
+  was trained only on 8-token windows, so contexts longer than that
+  (and the compounding of its own errors) are out of distribution.
+  The example asserts what is actually verified — loss down, val
+  perplexity 1.00, identical generation after reload — not that
+  greedy reproduces the sentence (Day 9's 5-token overfit test
+  already proves exact reproduction on a short sequence).
+- Val perplexity 1.00 is optimistic: the corpus repeats the same
+  sentence 8x and the split is random over overlapping sliding
+  windows, so val windows are near-duplicates of train windows.
+
+### Day 11 — next tasks (Month 5 — training loop, continued)
+1. `Trainer` checkpoint callback: save the best model to disk
+   automatically when val loss improves (`checkpoint_path`).
+2. LR scheduler test with the Trainer (CosineAnnealingLR stepped
+   per epoch, lr actually decays).
+3. Longer training corpus for the tiny LM (multi-paragraph original
+   text file) + train with the Trainer, report generation quality.
+4. README quickstart for Trainer + checkpoints.
+5. Write Day 11 entry in this file. Keep each slice to its own small commit.
