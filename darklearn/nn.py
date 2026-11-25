@@ -56,6 +56,27 @@ class Module:
                         params.append(item)
         return params
 
+    def named_parameters(self, prefix: str = "") -> list[tuple[str, Tensor]]:
+        """``(dotted_name, tensor)`` pairs, e.g. ``"fc1.weight"`` or
+        ``"layers.0.bias"``. The order matches ``parameters()``; the
+        names are what checkpoints use as keys."""
+        named: list[tuple[str, Tensor]] = []
+        for name, v in vars(self).items():
+            if name.startswith("_"):
+                continue
+            full = f"{prefix}{name}" if not prefix else f"{prefix}.{name}"
+            if isinstance(v, Tensor):
+                named.append((full, v))
+            elif isinstance(v, Module):
+                named.extend(v.named_parameters(full))
+            elif isinstance(v, (list, tuple)):
+                for i, item in enumerate(v):
+                    if isinstance(item, Module):
+                        named.extend(item.named_parameters(f"{full}.{i}"))
+                    elif isinstance(item, Tensor):
+                        named.append((f"{full}.{i}", item))
+        return named
+
     def zero_grad(self) -> None:
         for p in self.parameters():
             p.zero_grad()
