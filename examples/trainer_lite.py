@@ -2,7 +2,9 @@
 
 A small preview of the full Trainer planned for Month 5: epochs, batches,
 loss, optimiser, optional LR scheduler (stepped per epoch) and gradient
-clipping. Kept in examples/ for now — the library-level Trainer comes later.
+clipping. Kept in examples/ for now — the library-level Trainer
+(``darklearn.trainer.Trainer``, with eval loop, perplexity, gradient
+accumulation and early stopping) landed on Day 10.
 
 Run:  python3 examples/trainer_lite.py   (from repo root)
 """
