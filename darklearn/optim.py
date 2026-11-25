@@ -19,6 +19,39 @@ class Optimizer:
     def step(self):  # pragma: no cover
         raise NotImplementedError
 
+    def state_dict(self) -> dict:
+        """Plain-data snapshot of the optimizer (lr + per-param state),
+        keyed by param index so it survives a save/load round-trip."""
+        return {"lr": self.lr}
+
+    def load_state_dict(self, state: dict) -> None:
+        """Restore a snapshot from ``state_dict()``. The optimizer
+        must already hold the same params in the same order."""
+        if "lr" in state:
+            self.lr = float(state["lr"])
+
+
+def _indexed_state(vecs: dict, params) -> dict:
+    """Per-param lists keyed by param index (``vecs`` is keyed by
+    ``id(param)`` internally)."""
+    return {i: list(vecs.get(id(p), [0.0] * p.numel))
+            for i, p in enumerate(params)}
+
+
+def _load_indexed(vecs: dict, state: dict, key: str, params) -> None:
+    """Restore per-param lists from ``state[key]`` into ``vecs``."""
+    saved = state.get(key, {})
+    for i, values in saved.items():
+        i = int(i)
+        if not 0 <= i < len(params):
+            raise ValueError(f"optimizer state key {key}[{i}] has no "
+                             f"matching param ({len(params)} params)")
+        if len(values) != params[i].numel:
+            raise ValueError(f"optimizer state {key}[{i}] has "
+                             f"{len(values)} values, param has "
+                             f"{params[i].numel}")
+        vecs[id(params[i])] = [float(x) for x in values]
+
 
 class SGD(Optimizer):
     """Stochastic gradient descent, optionally with momentum and weight decay."""
@@ -29,6 +62,15 @@ class SGD(Optimizer):
         self.momentum = float(momentum)
         self.weight_decay = float(weight_decay)
         self._vel: dict[int, list[float]] = {}
+
+    def state_dict(self) -> dict:
+        state = super().state_dict()
+        state["vel"] = _indexed_state(self._vel, self.params)
+        return state
+
+    def load_state_dict(self, state: dict) -> None:
+        super().load_state_dict(state)
+        _load_indexed(self._vel, state, "vel", self.params)
 
     def step(self) -> None:
         for p in self.params:
@@ -63,6 +105,20 @@ class Adam(Optimizer):
         self.t = 0
         self._m: dict[int, list[float]] = {}
         self._v: dict[int, list[float]] = {}
+
+    def state_dict(self) -> dict:
+        state = super().state_dict()
+        state["t"] = self.t
+        state["m"] = _indexed_state(self._m, self.params)
+        state["v"] = _indexed_state(self._v, self.params)
+        return state
+
+    def load_state_dict(self, state: dict) -> None:
+        super().load_state_dict(state)
+        if "t" in state:
+            self.t = int(state["t"])
+        _load_indexed(self._m, state, "m", self.params)
+        _load_indexed(self._v, state, "v", self.params)
 
     def step(self) -> None:
         self.t += 1
@@ -103,6 +159,20 @@ class AdamW(Optimizer):
         self.t = 0
         self._m: dict[int, list[float]] = {}
         self._v: dict[int, list[float]] = {}
+
+    def state_dict(self) -> dict:
+        state = super().state_dict()
+        state["t"] = self.t
+        state["m"] = _indexed_state(self._m, self.params)
+        state["v"] = _indexed_state(self._v, self.params)
+        return state
+
+    def load_state_dict(self, state: dict) -> None:
+        super().load_state_dict(state)
+        if "t" in state:
+            self.t = int(state["t"])
+        _load_indexed(self._m, state, "m", self.params)
+        _load_indexed(self._v, state, "v", self.params)
 
     def step(self) -> None:
         self.t += 1
