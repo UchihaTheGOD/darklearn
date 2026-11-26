@@ -1,0 +1,63 @@
+Darklearn began as a small idea. A library that teaches a machine
+to learn, written in plain Python, with nothing to install and
+nothing to hide. Every line is there to be read. Every step is
+there to be followed. The goal was never to beat the biggest
+frameworks. The goal was to understand the whole machine.
+
+The first piece is the tensor. A tensor is a box of numbers with a
+shape. Inside, the numbers sit in one flat row, and the shape tells
+you how to read them back as rows and columns. Addition works on
+these boxes. Multiplication works on these boxes. A matrix multiply
+takes a row from one table and a column from another, multiplies the
+matching numbers, and adds them up.
+
+The second piece is the gradient. Every operation remembers how it
+was done, so the mistake can flow backwards through the steps that
+made it. This is the chain rule, written as a tape of small records.
+The tape is flat and simple. It holds numbers for the operation, the
+output, and the inputs. Walking it backwards is one loop.
+
+A linear layer is a matrix multiply plus a bias. An activation bends
+the straight line so the network can learn curves. A loss measures
+how wrong the guess was. An optimizer is a rule for moving the
+weights a small step downhill. Training is a loop. Forward, loss,
+backward, step. The loss falls a little at a time until the model
+fits the data.
+
+Data matters as much as the model. A dataset hands out examples one
+batch at a time. Shuffling mixes the order so the model cannot
+memorize the sequence. A split keeps some examples aside for
+validation, so you can tell learning apart from memorizing. The
+validation loss is the honest number.
+
+Text has to become numbers before a model can read it. A tokenizer
+splits words into pieces and gives each piece an id. Byte pair
+encoding learns which pairs appear together most often and merges
+them into single tokens. Common words become one token. Rare words
+stay as pieces. Nothing is ever unknown, because every byte is a
+token on its own.
+
+Attention lets each token look at the tokens before it and decide
+which ones matter. A transformer block adds attention and a small
+feed forward network, with layer norm to keep the numbers steady
+and residual paths so the gradient can flow. Stack a few blocks and
+the model can follow patterns across a whole sentence.
+
+A checkpoint saves the best weights to disk. If training stops early
+or the loss bounces back up, the good weights are still there. The
+trainer watches the validation loss and writes a new file only when
+it improves. The learning rate can decay slowly, so the steps get
+smaller as the model settles near the bottom.
+
+Small models have honest limits. A tiny model trained on a small
+corpus will repeat itself and drift when it writes freely. It learns
+the local patterns, the common words, the shape of a sentence. It
+does not understand the world. Knowing that limit is part of
+building well. A small model that is honest about what it knows is
+more useful than a big model that pretends.
+
+The point of building it by hand is the learning itself. Each part
+is small enough to hold in your head. The tensor, the tape, the
+layer, the optimizer, the loop. Put them together and you have a
+machine that learns. Change one part and watch what happens. That
+is how you learn to build the next one, bigger and better.
