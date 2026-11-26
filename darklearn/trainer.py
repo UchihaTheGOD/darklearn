@@ -14,8 +14,9 @@ target Tensor into a list of ints (see ``examples/train_tiny_lm.py``).
 from __future__ import annotations
 
 import math
+import os
 
-from .checkpoint import load_state_dict, state_dict
+from .checkpoint import load_state_dict, save_checkpoint, state_dict
 from .optim import clip_grad_norm_
 
 
@@ -94,12 +95,20 @@ class Trainer:
             loss when a val loader is given, else the train loss.
         batch_fn: optional ``batch -> (model_input, target)``; the
             default passes the loader's ``(x, y)`` straight through.
+        checkpoint_path: optional path; when given, the best model so
+            far is saved to disk (weights + optimizer state + epoch)
+            every time the watched loss improves — the val loss when a
+            val loader is given, else the train loss. The file is
+            only written on improvement, never on a worse epoch, so
+            it always holds the best weights. ``best_loss`` and
+            ``best_epoch`` report what was saved; the parent folder
+            is created if it does not exist yet.
     """
 
     def __init__(self, model, loss_fn, optimizer, scheduler=None,
                  max_grad_norm: float | None = None, accum_steps: int = 1,
                  early_stopping: EarlyStopping | None = None,
-                 batch_fn=None):
+                 batch_fn=None, checkpoint_path=None):
         if accum_steps < 1:
             raise ValueError(f"accum_steps must be >= 1, got {accum_steps}")
         self.model = model
@@ -110,6 +119,9 @@ class Trainer:
         self.accum_steps = int(accum_steps)
         self.early_stopping = early_stopping
         self.batch_fn = batch_fn
+        self.checkpoint_path = checkpoint_path
+        self.best_loss: float | None = None
+        self.best_epoch: int | None = None
 
     def _run_batches(self, loader, training: bool) -> float:
         """One pass over ``loader``; returns the mean loss. When
@@ -182,9 +194,23 @@ class Trainer:
                         f"ppl={math.exp(val_loss):.2f}")
             if epoch == 1 or epoch % log_every == 0 or epoch == epochs:
                 print(msg)
+            watched = (history["val_loss"][-1] if val_loader is not None
+                       else train_loss)
+            if self.checkpoint_path is not None:
+                if self.best_loss is None or watched < self.best_loss:
+                    self.best_loss = float(watched)
+                    self.best_epoch = epoch
+                    folder = os.path.dirname(
+                        os.path.abspath(self.checkpoint_path))
+                    os.makedirs(folder, exist_ok=True)
+                    save_checkpoint(
+                        self.checkpoint_path, self.model,
+                        optimizer=self.optimizer, epoch=epoch,
+                        extra={"val_loss": watched} if val_loader is not None
+                        else {"train_loss": watched})
+                    print(f"  checkpoint: best {watched:.4f} at epoch "
+                          f"{epoch} -> {self.checkpoint_path}")
             if self.early_stopping is not None:
-                watched = (history["val_loss"][-1] if val_loader is not None
-                           else train_loss)
                 if self.early_stopping.step(watched, model=self.model):
                     print(f"early stopping at epoch {epoch} "
                           f"(best={self.early_stopping.best_value:.4f})")
