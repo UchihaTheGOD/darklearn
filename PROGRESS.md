@@ -772,13 +772,140 @@ reference the new engine is tested against.
   false alarm) and the task explicitly authorized this build.
   No git commands were run and nothing was pushed.
 
-### Day 12 — next tasks (Month 5 — training loop, continued)
-1. `Trainer` resume: `fit(resume_from="best.pt")` — load a
-   checkpoint and continue training from its epoch (+ test).
-2. Beam search generation in `darklearn/generate.py` (keep top-k
-   beams, compare with greedy on the tiny LM) (+ test).
-3. Save the tokenizer alongside the checkpoint (one artifact =
-   model + tokenizer + config) (+ test).
-4. Train the tiny LM with seq_len 16 and compare perplexity vs
-   seq_len 8 on the story corpus, report honestly.
-5. Write Day 12 entry in this file. Keep each slice to its own small commit.
+## Day 12 — 2026-11-27 — v0.1.0-day12 (Month 5 — resume, beam search,
+tokenizer checkpoints)
+
+### Built
+- `Trainer` resume in `darklearn/trainer.py`:
+  `fit(..., resume_from="best.pt")` loads a checkpoint's weights +
+  optimizer state (incl. Adam moments and lr) and continues
+  training from its epoch — `epochs` means that many *more*
+  epochs, and epoch numbering continues. Best-loss tracking (and
+  an attached `EarlyStopping`, incl. its in-memory best weights)
+  is restored from the checkpoint's saved loss, so a resumed run
+  does not overwrite the best file with a worse epoch. Known
+  limit, documented in the docstring: an LR scheduler is NOT
+  restored (schedulers carry no saved state yet) — it restarts
+  from its initial state.
+- Beam search in `darklearn/generate.py`: `beam_search(model,
+  prompt_ids, max_new_tokens=20, beam_width=4, eos_id=None,
+  length_penalty=0.0)` — keeps the top-`beam_width` partial
+  sequences by cumulative log-probability, expanding each beam by
+  its `beam_width` best next tokens. Finished (eos) beams are kept
+  aside; `beam_width=1` is exactly greedy. `length_penalty`
+  divides a beam's score by `(generated) ** length_penalty`
+  (0.0 = raw cumulative log-prob, 1.0 = mean log-prob per token).
+- Tokenizer alongside the checkpoint in `darklearn/checkpoint.py`:
+  `tokenizer_state()` / `load_tokenizer_state()` (plain data, same
+  `darklearn-bpe-v1` format `BPETokenizer.save` writes),
+  `save_checkpoint(..., tokenizer=tok)` stores the vocab + merges
+  in the same file, `load_checkpoint(..., tokenizer=fresh_tok)`
+  restores them; asking for tokenizer state a file does not hold
+  raises `ValueError`. `Trainer` takes `tokenizer=...` and passes
+  it to the checkpoint callback, so one artifact is the whole
+  runnable model. Old checkpoints without a tokenizer still load
+  fine when no tokenizer is asked for.
+- `beam_search`, `tokenizer_state`, `load_tokenizer_state` exported
+  from `darklearn`; `__version__` bumped to `0.1.0-day12`.
+- `tests/test_day12.py`: 9 new tests.
+- `examples/train_tiny_lm_seq16.py`: same corpus / model / seeds /
+  lr / cosine schedule as Day 11, only the window changes (16
+  tokens instead of 8), prints a seq-8 vs seq-16 comparison table,
+  saves model + tokenizer in one checkpoint, reloads into fresh
+  objects, and compares beam-4 vs greedy by total log-prob.
+
+### Test results (2026-11-27, Python 3.12.3, local VM)
+- `python3 tests/test_day12.py` — **9/9 PASS**:
+  `test_trainer_resume_matches`,
+  `test_trainer_resume_restores_best`,
+  `test_trainer_resume_no_optimizer_state`,
+  `test_beam_search_beats_greedy`,
+  `test_beam_search_width1_is_greedy`,
+  `test_beam_search_eos_and_errors`,
+  `test_checkpoint_with_tokenizer`,
+  `test_checkpoint_tokenizer_missing_raises`,
+  `test_trainer_checkpoint_with_tokenizer`
+- Full suite: **87/87 PASS** (Day 1: 7, Day 2: 7, Day 4: 7, Day 5: 4,
+  Day 6: 7, Day 7: 7, Day 8: 11, Day 9: 8, Day 10: 8, Day 11: 4,
+  Day 12: 9, DarkCore: 8)
+- `python3 examples/train_mlp.py` — **loss 0.3624 -> 0.0000** (unchanged)
+- `python3 examples/train_tiny_lm_seq16.py` — **corpus 3,338 chars
+  -> 2,013 tokens, vocab 384; train 7.2912 -> 3.6940 in 3 epochs
+  (~503s); best epoch 1, val loss 5.3774, val perplexity 216.46**;
+  checkpoint `examples/checkpoints/tiny_lm_seq16.pt` (epoch 1)
+  reloaded model + tokenizer, generation identical.
+- seq_len comparison (same corpus, model, seeds, lr):
+
+  |                | seq 8 (Day 11) | seq 16 (today) |
+  |----------------|----------------|----------------|
+  | train loss     | 7.0625 -> 3.0393 | 7.2912 -> 3.6940 |
+  | epochs         | 4              | 3              |
+  | best epoch     | 1              | 1              |
+  | val loss       | 5.0573         | 5.3774         |
+  | val perplexity | 157.16         | 216.46         |
+
+  Beam vs greedy on the trained seq-16 model (total log-prob of
+  the 12 generated tokens): "The first piece" greedy -86.08 vs
+  beam-4 -82.71; "Training is a loop" greedy -84.17 vs beam-4
+  -82.41. Beam wins on score both times, as the search promises —
+  the text itself is still nonsense ("...pieceandandonchtheop..."),
+  the model is too small to use the extra context.
+
+### Honest notes
+- **seq_len 16 is worse, not better, on this corpus.** Val
+  perplexity 216.46 vs 157.16 at seq 8, and train loss ends higher
+  too (3.69 vs 3.04). Both runs peak at epoch 1 and then overfit,
+  so the longer window just gives the tiny model more to memorise
+  per window without generalising better. A bigger model or more
+  varied data would be needed before a longer window can pay off —
+  not a longer window on this setup.
+- Resume restores the optimizer's lr from the checkpoint, as it
+  should — my first test assumed `Adam(lr=0.0)` would freeze the
+  resumed run, but the load overwrote lr to the saved 0.05 and
+  training continued. That was a test bug, not a code bug; the
+  test now freezes the resumed run with a huge weight decay
+  instead (weight decay is not part of the saved optimizer state).
+- Strongest checks: `test_trainer_resume_matches` — 6 straight
+  epochs vs 3 + resume 3 gives the same final loss (0.0180) and
+  byte-identical weights; `test_beam_search_beats_greedy` — a
+  crafted model where greedy's first pick leads to a flat
+  continuation, beam finds the better path (-0.92 vs -1.90 total
+  log-prob).
+
+### Bugs fixed during Day 12
+1. Real bug: `trainer.py` called `load_checkpoint` without
+   importing it (`NameError`) — added to the checkpoint import.
+2. Test bug: my beam-search smoke table tied token 0 and token 2
+   at the first step, so the beam kept `[0, 0]` instead of
+   `[0, 2]` — made token 0 strictly worse in the table.
+3. Example bug (caught before running): the reload model was built
+   from a fresh 256-vocab tokenizer, so its shapes could not match
+   the 384-vocab checkpoint — built from the original tokenizer
+   instead; the tokenizer itself is restored from the file.
+4. Test bug: see Honest notes — lr=0.0 does not freeze a resumed
+   run; switched the "worse resumed epochs" lever to weight decay.
+
+### Push notes
+- Push (1/7) was interrupted by a service restart mid-call; the
+  branch head was still Day 11's `c2837225`, so the push had not
+  landed and was safely retried (same as Day 6).
+- Push (5/7) first failed with a broken pipe before writing; the
+  head was still `be7122fd`, so it was safely retried and landed
+  as `919ac8ba`. No duplicate commits resulted from either retry.
+- Note for the parent: an execution-risk notice appeared on file
+  reads at the start of this run, as on Day 11; I proceeded
+  because the parent had already verified these files are clean
+  (own code, false alarm) and the task explicitly authorized
+  this build.
+
+### Day 13 — next tasks (Month 5/6 — profile, then optimise)
+1. Profile the tiny LM training step (`cProfile` on one epoch):
+   where does the time go — forward, backward, optimizer, data?
+   Report the top time sinks honestly, no fix yet.
+2. Pool the small temporaries in DarkCore tape backward (the
+   "still naive" note from Day 3) + re-benchmark vs Day 3 numbers.
+3. C fused-SGD step in `_darkcore.c` + wire into `fused_sgd_step`
+   (Python stays the fallback) + benchmark.
+4. Data pipeline benchmark: DataLoader throughput on the story
+   corpus (windows/sec) as a baseline for Month 6.
+5. Write Day 13 entry in this file. Keep each slice to its own small commit.
