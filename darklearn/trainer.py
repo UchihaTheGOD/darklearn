@@ -104,6 +104,10 @@ class Trainer:
             it always holds the best weights. ``best_loss`` and
             ``best_epoch`` report what was saved; the parent folder
             is created if it does not exist yet.
+        tokenizer: optional ``BPETokenizer``; when given together
+            with ``checkpoint_path`` its vocab + merges are saved
+            into the same checkpoint file, so one artifact holds the
+            whole runnable model (see ``darklearn.checkpoint``).
         resume_from: optional path to a checkpoint saved with
             ``save_checkpoint``; ``fit`` loads its weights and
             optimizer state and continues training from its epoch,
@@ -120,7 +124,7 @@ class Trainer:
     def __init__(self, model, loss_fn, optimizer, scheduler=None,
                  max_grad_norm: float | None = None, accum_steps: int = 1,
                  early_stopping: EarlyStopping | None = None,
-                 batch_fn=None, checkpoint_path=None):
+                 batch_fn=None, checkpoint_path=None, tokenizer=None):
         if accum_steps < 1:
             raise ValueError(f"accum_steps must be >= 1, got {accum_steps}")
         self.model = model
@@ -132,6 +136,7 @@ class Trainer:
         self.early_stopping = early_stopping
         self.batch_fn = batch_fn
         self.checkpoint_path = checkpoint_path
+        self.tokenizer = tokenizer
         self.best_loss: float | None = None
         self.best_epoch: int | None = None
 
@@ -240,6 +245,7 @@ class Trainer:
                     save_checkpoint(
                         self.checkpoint_path, self.model,
                         optimizer=self.optimizer, epoch=epoch,
+                        tokenizer=self.tokenizer,
                         extra={"val_loss": watched} if val_loader is not None
                         else {"train_loss": watched})
                     print(f"  checkpoint: best {watched:.4f} at epoch "

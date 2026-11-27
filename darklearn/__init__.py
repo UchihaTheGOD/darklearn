@@ -8,7 +8,7 @@ Day 3: 0.1.0-day3. Day 4: 0.1.0-day4. Day 5: 0.1.0-day5. Day 6: 0.1.0-day6. Day 
 
 from .tensor import Tensor
 from .autograd import Value, backward, gradcheck
-from .generate import generate
+from .generate import beam_search, generate
 from .nn import (Module, Linear, ReLU, Tanh, Sigmoid, GELU, Dropout,
                  Embedding, LayerNorm, sinusoidal_positional_encoding,
                  scaled_dot_product_attention, MultiHeadAttention,
@@ -20,8 +20,9 @@ from .data import (Dataset, MappedDataset, Subset, TensorDataset,
                  DataLoader, split_dataset, Normalize, TextDataset)
 from .tokenizer import BPETokenizer
 from .trainer import Trainer, EarlyStopping
-from .checkpoint import (state_dict, load_state_dict,
-                         save_checkpoint, load_checkpoint)
+from .checkpoint import (load_checkpoint, load_state_dict,
+                         load_tokenizer_state, save_checkpoint,
+                         state_dict, tokenizer_state)
 from .darkcore import (Tape, CoreTensor, BufferPool, matmul_tiled,
                        matmul_rows, matmul, fused_linear_relu,
                        fused_sgd_step, C_AVAILABLE, c_available)
@@ -30,7 +31,7 @@ __version__ = "0.1.0-day11"
 
 __all__ = [
     "__version__",
-    "Tensor", "Value", "backward", "gradcheck", "generate",
+    "Tensor", "Value", "backward", "gradcheck", "generate", "beam_search",
     "Module", "Linear", "ReLU", "Tanh", "Sigmoid", "GELU", "Dropout",
     "Embedding", "LayerNorm", "sinusoidal_positional_encoding",
     "scaled_dot_product_attention", "MultiHeadAttention",
@@ -42,7 +43,8 @@ __all__ = [
     "split_dataset", "Normalize", "TextDataset",
     "BPETokenizer",
     "Trainer", "EarlyStopping",
-    "state_dict", "load_state_dict", "save_checkpoint", "load_checkpoint",
+    "state_dict", "load_state_dict", "tokenizer_state",
+    "load_tokenizer_state", "save_checkpoint", "load_checkpoint",
     "Tape", "CoreTensor", "BufferPool", "matmul_tiled", "matmul_rows",
     "matmul", "fused_linear_relu", "fused_sgd_step",
     "C_AVAILABLE", "c_available",
