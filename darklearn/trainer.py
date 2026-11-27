@@ -16,7 +16,8 @@ from __future__ import annotations
 import math
 import os
 
-from .checkpoint import load_state_dict, save_checkpoint, state_dict
+from .checkpoint import (load_checkpoint, load_state_dict,
+                         save_checkpoint, state_dict)
 from .optim import clip_grad_norm_
 
 
@@ -103,6 +104,17 @@ class Trainer:
             it always holds the best weights. ``best_loss`` and
             ``best_epoch`` report what was saved; the parent folder
             is created if it does not exist yet.
+        resume_from: optional path to a checkpoint saved with
+            ``save_checkpoint``; ``fit`` loads its weights and
+            optimizer state and continues training from its epoch,
+            so ``epochs`` more epochs run after the saved one. The
+            best-loss tracking (and an attached ``EarlyStopping``)
+            is restored from the checkpoint's saved loss when the
+            checkpoint was written by this Trainer's callback, so a
+            resumed run does not overwrite the best file with a
+            worse epoch. Known limit: an LR scheduler is NOT
+            restored — it restarts from its initial state, because
+            schedulers carry no saved state yet.
     """
 
     def __init__(self, model, loss_fn, optimizer, scheduler=None,
@@ -173,14 +185,36 @@ class Trainer:
         return total / batches
 
     def fit(self, train_loader, epochs: int = 1, val_loader=None,
-            log_every: int = 1) -> dict:
+            log_every: int = 1, resume_from=None) -> dict:
         """Run training; returns a history dict with ``train_loss``
         (one mean loss per epoch) and, when ``val_loader`` is given,
-        ``val_loss`` and ``val_perplexity`` per epoch."""
+        ``val_loss`` and ``val_perplexity`` per epoch. With
+        ``resume_from`` the weights + optimizer state are loaded
+        first and epoch numbering continues from the checkpoint's
+        epoch, so ``epochs`` means that many *more* epochs."""
+        start_epoch = 0
+        if resume_from is not None:
+            meta = load_checkpoint(resume_from, model=self.model,
+                                   optimizer=self.optimizer)
+            start_epoch = meta["epoch"] or 0
+            extra = meta.get("extra") or {}
+            key = ("val_loss" if val_loader is not None
+                   else "train_loss")
+            if key in extra:
+                # The resumed weights ARE the best so far; record
+                # them so the checkpoint callback and early stopping
+                # compare against them instead of starting fresh.
+                self.best_loss = float(extra[key])
+                self.best_epoch = start_epoch
+                if self.early_stopping is not None:
+                    self.early_stopping.best_value = float(extra[key])
+                    self.early_stopping.best_state = state_dict(self.model)
+                    self.early_stopping.bad_epochs = 0
+            print(f"resumed from {resume_from} (epoch {start_epoch})")
         history: dict[str, list[float]] = {
             "train_loss": [], "val_loss": [], "val_perplexity": [],
         }
-        for epoch in range(1, epochs + 1):
+        for epoch in range(start_epoch + 1, start_epoch + epochs + 1):
             train_loss = self._run_batches(train_loader, training=True)
             history["train_loss"].append(train_loss)
             if self.scheduler is not None:
