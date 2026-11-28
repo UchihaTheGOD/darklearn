@@ -909,3 +909,161 @@ tokenizer checkpoints)
 4. Data pipeline benchmark: DataLoader throughput on the story
    corpus (windows/sec) as a baseline for Month 6.
 5. Write Day 13 entry in this file. Keep each slice to its own small commit.
+
+## Day 13 — 2026-11-28 — v0.1.0-day13 (Month 6 — profile + optimise)
+
+### Built
+- `examples/profile_train_step.py`: profiles one training epoch of
+  the Day 11 setup (story corpus, seq_len 8, d_model 16, 2 blocks,
+  batch 8, 51 batches/epoch) two ways — `cProfile` top functions,
+  and a wall-clock phase breakdown (data-only / forward-only / full
+  step passes). Measurement only; it changes no training code.
+- DarkCore tape backward pools its small temporaries
+  (`darklearn/darkcore.py`): add/mul/relu/sum/fused-linear grad
+  buffers (broadcast expansions, elementwise products, reductions,
+  the fused bias grad) now come from the `BufferPool` and are
+  released right after `_accum` (which copies, so nothing kept
+  points at them). New `_reduce_grad_into` / `_expand_into`
+  helpers return `(buf, from_pool)` so the no-allocation
+  same-shape path stays allocation-free.
+- `BufferPool.acquire_dirty(n)`: recycled buffer without the
+  zeroing pass, for callers that overwrite every element before
+  reading it. The zeroing loop alone costs ~88 us at n=1024 on
+  this VM — nearly as much as the fill itself — which is why the
+  first pooled version measured slower than the list-comprehension
+  version. Matmul/transpose scratch in backward uses it too
+  (fully overwritten by the kernels); row-sum and bias-grad
+  buffers keep the zeroed `acquire` (they accumulate with `+=`).
+- `fused_sgd_step` split into `fused_sgd_step_py` (the old loop,
+  kept as the fallback) and `fused_sgd_step_c` (new C kernel in
+  `darklearn/_darkcore.c`: in-place update, velocity created and
+  returned as bytes only on first use with momentum, computed in
+  double with the same left-to-right order as the Python loop so
+  results match to float32 rounding). The public
+  `fused_sgd_step` dispatches to C when built, else Python.
+  `fused_sgd_step_py` / `fused_sgd_step_c` exported from
+  `darklearn`; `__version__` bumped to `0.1.0-day13`.
+- `examples/bench_backward.py`: tape-backward timing on a fixed
+  graph + fused-SGD timing (Python vs C when built).
+- `examples/bench_dataloader.py`: DataLoader throughput on the
+  story corpus (windows/sec) — the Month 6 baseline.
+- `tests/test_day13.py`: 3 new tests.
+
+### Measured results (2026-11-28, Python 3.12.3, gcc 13.3, local VM)
+- **Profile — one training epoch, 32.58s wall clock:**
+  data (loader + batch_fn) **0.00s (0.0%)**, forward (model + loss)
+  **10.52s (32.3%)**, backward + clip + step **22.05s (67.7%)**.
+  `cProfile` (63.8s under the profiler, ~2x overhead) top sinks:
+  `Tensor._bw` (the per-op backward closure) 28.59s own / 30.70s
+  cumulative over 9,246 calls; `Tensor.__matmul__` (naive i-j-k
+  loop) 15.07s / 15.53s; `Tensor.__init__` + `_flatten` 9.55s +
+  7.35s over **195,708** Tensor constructions per epoch;
+  `Tensor.detach` 4.45s (78,267 calls); `Tensor._accum` 4.51s
+  (73,968 calls). The data pipeline costs nothing; backward is
+  two-thirds of the epoch, and the single hottest function is the
+  per-op backward closure — that is where Month 6 optimisation
+  should aim, not at the loader.
+- **Pooled backward vs baseline** (fixed graph
+  `((a*b + c).relu() @ W).sum()`, baseline measured before the
+  change): (8,16)@(16,8) 0.45 ms -> 0.44–0.51 ms across runs,
+  (32,32)@(32,32) 4.83 ms -> 4.62–4.94 ms — **~1.0x, no speedup**.
+  Reported as-is: pooling removes the per-record allocations
+  (pool-reuse is asserted by the tests) but does not speed this
+  graph up, because the explicit fill loops cost about what the
+  list comprehensions saved — CPython loop bytecode dominates
+  either way, the same lesson as Day 3's tiling. The first pooled
+  version measured 0.94x (slower); the zeroing pass in `acquire`
+  was the cause, fixed with `acquire_dirty`.
+- **C fused SGD** (14,976 params, 6 tensors): Python 1.848 ms/step
+  (no momentum) / 3.995 ms/step (momentum 0.9, wd 0.01); C
+  0.104 ms / 0.207 ms — **17.8x / 19.3x**. C matches `optim.SGD`
+  and the Python fused step to 1e-6 over 3 steps in all three
+  (momentum, wd) combinations.
+- **DataLoader baseline** (windows/sec, story corpus):
+  seq 8 batch 8 plain 348,309; shuffled + batch_fn 274,191;
+  batch 32 plain 375,070; seq 16 batch 8 plain 246,289;
+  shuffled + batch_fn 182,879; batch 32 plain 293,967. One epoch
+  needs 402 windows — ~1.5 ms at the shuffled rate — which is why
+  the profile shows the loader at 0.00s.
+- `bench_darkcore.py` after the C rebuild: rows 4.92–4.94x,
+  C 713–788x vs naive (Day 3: rows ~4.8–5.1x, C ~890–948x —
+  same ballpark, run-to-run variation).
+
+### Test results (2026-11-28, Python 3.12.3, local VM)
+- `python3 tests/test_day13.py` — **3/3 PASS**:
+  `test_backward_pools_small_temporaries`,
+  `test_fused_backward_pools`, `test_c_fused_sgd_matches`
+- Full suite: **90/90 PASS** (Day 1: 7, Day 2: 7, Day 4: 7, Day 5: 4,
+  Day 6: 7, Day 7: 7, Day 8: 11, Day 9: 8, Day 10: 8, Day 11: 4,
+  Day 12: 9, Day 13: 3, DarkCore: 8)
+- `python3 examples/train_mlp.py` — **loss 0.3624 -> 0.0000** (unchanged)
+- `python3 examples/trainer_lite.py` — **loss 0.2364 -> 0.0008** (unchanged)
+- `python3 examples/train_val_split.py` — **train 0.3934 -> 0.0000,
+  val 0.2692 -> 0.0000** (unchanged)
+- `python3 examples/train_bpe.py` — **vocab 320** (unchanged)
+- `python3 examples/embed_sentence.py` — **21 tokens -> (21, 16)** (unchanged)
+- `python3 examples/tiny_gpt.py` — **loss 11.2851 -> 0.0001** (unchanged)
+- `python3 examples/generate_text.py` — **greedy reproduces the
+  sentence** (unchanged)
+- `python3 examples/train_tiny_lm.py` — **train 10.1170 -> 0.8683,
+  val perplexity 1.00** (unchanged)
+- `python3 examples/bench_backward.py` — **backward ~1.0x vs
+  baseline; C fused SGD 17.8x / 19.3x** (see above)
+- `python3 examples/bench_dataloader.py` — **274,191 windows/s**
+  shuffled + batch_fn at seq 8 (see above)
+- `python3 examples/profile_train_step.py` — **backward 67.7% of
+  the epoch; data 0.0%** (see above)
+
+### Honest notes
+- The pooled-backward result is a deliberate non-win, recorded
+  rather than hidden: fewer allocations, same speed. The profile
+  says the real backward cost is the per-op closure machinery in
+  `tensor.py` (`_bw`, 195k Tensor constructions), not the
+  DarkCore tape's small temporaries — so Day 14 should aim at
+  the Tensor engine's backward hot spots (or a C backward for
+  the tape), not at more pooling.
+- The C SGD speedup (18–19x) is real but narrow: it covers the
+  optimizer step only, which the profile shows is a small slice
+  of the 22.05s backward+step phase (the step itself is ~4 ms of
+  it at Python speed). Do not present it as an 18x training
+  speedup.
+- Found while writing the fused-pool test: `Tape.backward()`
+  replays *every* record on the tape, so a second call
+  re-accumulates earlier graphs' grads — the debug showed the
+  first graph's grad at exactly 3x after a second backward
+  (1x from the first call, then the replay added the stale
+  output grad of 2.0, not 1.0). Documented in `backward()`'s
+  docstring; the test now compares grads after the first
+  backward only. This is pre-existing tape behaviour, not
+  something the pooling change introduced.
+
+### Bugs fixed during Day 13
+1. Test bug: the fused-pool test compared grads after running a
+   second graph + backward on the same tape — the replay
+   re-accumulated the first graph's grads (see Honest notes).
+   Fixed by comparing after the first backward; the second graph
+   now only feeds the pool-reuse assertion.
+2. Test bug: the broadcast comparison first used a (1,3) row
+   against a (2,3) tensor, which neither engine broadcasts —
+   switched to a (3,) row, which both engines handle.
+3. Micro-benchmark fix: `array` slice assignment rejects a
+   `map` object, so the C-loop fill idea (`buf[:] =
+   map(mul, ...)`) does not work — measured the explicit loop
+   instead (118 us vs 113 us listcomp at n=1024) and kept the
+   loop.
+
+### Day 14 — next tasks (Month 6 — optimise, profile-guided)
+1. Cut Tensor-construction churn: audit where the 195,708
+   `Tensor.__init__` calls per epoch come from (per-op `_new`,
+   `detach` in the loss path) and remove the obvious ones +
+   re-profile the same epoch.
+2. C backward for the tape: matmul-grad via the C core
+   (`matmul_rows_into`'s per-call list building is the next
+   allocation hotspot) + benchmark vs today's numbers.
+3. `Tensor._bw` audit: the per-op backward closure is the top
+   cProfile sink — measure what a flatter backward (fewer
+   closures, fewer `detach` calls) saves on one epoch.
+4. Wire the C fused-SGD step into an SGD training path end to
+   end (Trainer + `optim.SGD` on the MLP example) and report
+   the epoch time vs the Python step.
+5. Write Day 14 entry in this file. Keep each slice to its own small commit.
