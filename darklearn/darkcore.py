@@ -21,8 +21,12 @@ what is ours is *how the engine is built*:
    ints (1=ADD, 2=MUL, 3=MATMUL, 4=RELU, 5=SUM, 6=FUSED_LINEAR_RELU).
    ``backward()`` is a single iterative loop over the tape in reverse.
 4. **Buffer pool**: ``BufferPool`` recycles scratch ``array('f')``
-   buffers (transposes and matmul temporaries in backward). Live outputs
-   are never pooled — only scratch that is released after use.
+   buffers (transposes and matmul temporaries in backward, plus the
+   small grad temporaries of add/mul/relu/sum/fused-linear backward —
+   broadcast expansions, elementwise products, reductions — all
+   acquired from the pool and released right after the grad is
+   accumulated, since accumulation copies). Live outputs are never
+   pooled — only scratch that is released after use.
 5. **Fused optimizer step**: ``fused_sgd_step`` updates params in place
    in one pass per tensor (grad + weight decay + momentum + step fused,
    no per-param Python objects).
@@ -135,6 +139,24 @@ class BufferPool:
             for i in range(n):
                 buf[i] = 0.0
             return buf
+        self.acquired += 1
+        return array("f", bytes(4 * n))
+
+    def acquire_dirty(self, n: int):
+        """Return an ``array('f')`` of length n, contents undefined.
+
+        Same recycling as ``acquire`` but without the zeroing pass —
+        for callers that overwrite every element before reading it
+        (a matmul output, an elementwise product, a masked grad).
+        The zeroing loop is pure overhead for those callers: measured
+        ~88 us at n=1024 on this VM, nearly as much as the fill itself.
+        Never use for a buffer that is accumulated into (+=) or only
+        partly written.
+        """
+        b = self._bins.get(n)
+        if b:
+            self.reused += 1
+            return b.pop()
         self.acquired += 1
         return array("f", bytes(4 * n))
 
@@ -300,21 +322,59 @@ def fused_linear_relu_c(x, w, b, batch: int, in_f: int, out_f: int):
 
 # -- tape autograd --------------------------------------------------------------
 
-def _reduce_grad(g, grad_shape, target_shape):
-    """Reduce a grad (flat array, ``grad_shape``) to ``target_shape``."""
+def _reduce_grad_into(g, grad_shape, target_shape, pool):
+    """Reduce a grad (flat array, ``grad_shape``) to ``target_shape``.
+
+    Returns ``(buf, from_pool)``. When the shapes already match,
+    ``(g, False)`` — no allocation, nothing to release. Otherwise the
+    reduction is computed into a pooled buffer, and the caller must
+    ``pool.release(buf)`` after accumulating from it (``_accum``
+    copies, so releasing right after is safe). This is what keeps
+    tape backward from allocating a fresh array per add/mul record.
+    """
     if grad_shape == target_shape:
-        return g
+        return g, False
     if target_shape == ():
-        return array("f", [sum(g)])
+        buf = pool.acquire_dirty(1)  # single element, set below
+        buf[0] = sum(g)
+        return buf, True
     if len(grad_shape) == 2 and len(target_shape) == 1:
         rows, cols = grad_shape
-        out = array("f", bytes(4 * cols))
+        buf = pool.acquire(cols)  # zeroed: the rows are summed into it
         for r in range(rows):
             base = r * cols
             for c in range(cols):
-                out[c] += g[base + c]
-        return out
+                buf[c] += g[base + c]
+        return buf, True
     raise ValueError(f"cannot reduce grad {grad_shape} to {target_shape}")
+
+
+def _expand_into(t, shape, pool):
+    """Expand ``t``'s data to ``shape`` (the add/mul broadcast rules).
+
+    Returns ``(flat, from_pool)``. When ``t`` already has ``shape``,
+    ``(t._data, False)`` — no allocation. Otherwise the expansion is
+    written into a pooled buffer, and the caller must release it after
+    use. Only the broadcast shapes ``_broadcast_pair`` supports are
+    handled here (same shape, scalar, or (m, n) with a (n,) row).
+    """
+    if t.shape == shape:
+        return t._data, False
+    if t.shape == ():
+        buf = pool.acquire_dirty(_numel(shape))  # fully overwritten below
+        v = float(t._data[0])
+        for i in range(len(buf)):
+            buf[i] = v
+        return buf, True
+    if len(shape) == 2 and len(t.shape) == 1 and shape[1] == t.shape[0]:
+        rows, cols = shape
+        buf = pool.acquire_dirty(rows * cols)  # fully overwritten below
+        for r in range(rows):
+            base = r * cols
+            for c in range(cols):
+                buf[base + c] = t._data[c]
+        return buf, True
+    raise ValueError(f"cannot broadcast {t.shape} to {shape}")
 
 
 def _broadcast_pair(a, b):
@@ -388,7 +448,12 @@ class Tape:
                 cur[i] += g[i]
 
     def backward(self, out) -> None:
-        """Reverse-mode autodiff from scalar ``out`` — one reverse loop."""
+        """Reverse-mode autodiff from scalar ``out`` — one reverse loop.
+
+        Replays *every* record on the tape, so call it once per graph:
+        a second call re-accumulates the earlier graphs' grads (their
+        output grads are still set), it does not start fresh.
+        """
         if out._tape is not self:
             raise ValueError("backward() called on a value from another Tape")
         if out.numel != 1:
@@ -404,47 +469,59 @@ class Tape:
                 for idx in ins:
                     v = values[idx]
                     if v.requires_grad:
-                        self._accum(idx, _reduce_grad(g, out_t.shape, v.shape))
+                        red, owned = _reduce_grad_into(g, out_t.shape,
+                                                       v.shape, pool)
+                        self._accum(idx, red)
+                        if owned:
+                            pool.release(red)
             elif op == OP_MUL:
                 a, b = values[ins[0]], values[ins[1]]
-                _, b_full, _ = _broadcast_pair(a, b)
-                # grad wrt a = g * b (expanded to out shape), then reduce
+                # grad wrt a = g * b (expanded to out shape), then reduce;
+                # grad wrt b = g * a, likewise. The expansions and the
+                # products are pooled scratch, released after _accum
+                # (which copies, so nothing it keeps points at them).
                 if a.requires_grad:
-                    ga = array("f", [float(gv) * float(bv)
-                                     for gv, bv in zip(g, b_full)])
-                    self._accum(ins[0], _reduce_grad(ga, out_t.shape, a.shape))
+                    b_full, b_owned = _expand_into(b, out_t.shape, pool)
+                    ga = pool.acquire_dirty(out_t.numel)
+                    for i in range(out_t.numel):
+                        ga[i] = g[i] * b_full[i]
+                    red, red_owned = _reduce_grad_into(ga, out_t.shape,
+                                                       a.shape, pool)
+                    self._accum(ins[0], red)
+                    if red_owned:
+                        pool.release(red)
+                    pool.release(ga)
+                    if b_owned:
+                        pool.release(b_full)
                 if b.requires_grad:
-                    # grad wrt b = g * a (expanded to out shape), then reduce
-                    if a.shape == b.shape:
-                        a_full = a._data
-                    elif a.shape == ():
-                        a_full = array("f", [float(a._data[0])] * out_t.numel)
-                    elif len(out_t.shape) == 2 and len(a.shape) == 1:
-                        rows, cols = out_t.shape
-                        a_full = array("f", [float(a._data[c])
-                                             for _ in range(rows)
-                                             for c in range(cols)])
-                    else:
-                        a_full = a._data
-                    gb = array("f", [float(gv) * float(av)
-                                     for gv, av in zip(g, a_full)])
-                    self._accum(ins[1], _reduce_grad(gb, out_t.shape, b.shape))
+                    a_full, a_owned = _expand_into(a, out_t.shape, pool)
+                    gb = pool.acquire_dirty(out_t.numel)
+                    for i in range(out_t.numel):
+                        gb[i] = g[i] * a_full[i]
+                    red, red_owned = _reduce_grad_into(gb, out_t.shape,
+                                                       b.shape, pool)
+                    self._accum(ins[1], red)
+                    if red_owned:
+                        pool.release(red)
+                    pool.release(gb)
+                    if a_owned:
+                        pool.release(a_full)
             elif op == OP_MATMUL:
                 a, b = values[ins[0]], values[ins[1]]
                 m, k = a.shape
                 _, n = b.shape
                 if a.requires_grad:
-                    bt = pool.acquire(n * k)
+                    bt = pool.acquire_dirty(n * k)
                     _transpose_into(b._data, k, n, bt)
-                    tmp = pool.acquire(m * k)
+                    tmp = pool.acquire_dirty(m * k)
                     matmul_rows_into(g, bt, m, n, k, tmp)
                     self._accum(ins[0], tmp)
                     pool.release(tmp)
                     pool.release(bt)
                 if b.requires_grad:
-                    at = pool.acquire(k * m)
+                    at = pool.acquire_dirty(k * m)
                     _transpose_into(a._data, m, k, at)
-                    tmp = pool.acquire(k * n)
+                    tmp = pool.acquire_dirty(k * n)
                     matmul_rows_into(at, g, k, m, n, tmp)
                     self._accum(ins[1], tmp)
                     pool.release(tmp)
@@ -453,38 +530,45 @@ class Tape:
                 v = values[ins[0]]
                 if v.requires_grad:
                     mask = saved
-                    ga = array("f", [float(gv) if mask[i] else 0.0
-                                     for i, gv in enumerate(g)])
+                    ga = pool.acquire_dirty(v.numel)
+                    for i in range(v.numel):
+                        ga[i] = g[i] if mask[i] else 0.0
                     self._accum(ins[0], ga)
+                    pool.release(ga)
             elif op == OP_SUM:
                 v = values[ins[0]]
                 if v.requires_grad:
                     gv = float(g[0])
-                    self._accum(ins[0], array("f", [gv] * v.numel))
+                    buf = pool.acquire_dirty(v.numel)
+                    for i in range(v.numel):
+                        buf[i] = gv
+                    self._accum(ins[0], buf)
+                    pool.release(buf)
             elif op == OP_FUSED_LINEAR_RELU:
                 x, w, b = values[ins[0]], values[ins[1]], values[ins[2]]
                 batch, in_f = x.shape
                 out_f, _ = w.shape
                 mask = saved
-                d = pool.acquire(batch * out_f)
+                d = pool.acquire_dirty(batch * out_f)
                 for i in range(batch * out_f):
                     d[i] = g[i] if mask[i] else 0.0
                 if b.requires_grad:
-                    gb = array("f", bytes(4 * out_f))
+                    gb = pool.acquire(out_f)  # zeroed: rows are summed into it
                     for i in range(batch):
                         base = i * out_f
                         for j in range(out_f):
                             gb[j] += d[base + j]
                     self._accum(ins[2], gb)
+                    pool.release(gb)
                 if x.requires_grad:
-                    tmp = pool.acquire(batch * in_f)
+                    tmp = pool.acquire_dirty(batch * in_f)
                     matmul_rows_into(d, w._data, batch, out_f, in_f, tmp)
                     self._accum(ins[0], tmp)
                     pool.release(tmp)
                 if w.requires_grad:
-                    dt = pool.acquire(out_f * batch)
+                    dt = pool.acquire_dirty(out_f * batch)
                     _transpose_into(d, batch, out_f, dt)
-                    tmp = pool.acquire(out_f * in_f)
+                    tmp = pool.acquire_dirty(out_f * in_f)
                     matmul_rows_into(dt, x._data, out_f, batch, in_f, tmp)
                     self._accum(ins[1], tmp)
                     pool.release(tmp)
@@ -688,9 +772,9 @@ def fused_linear_relu(x, w, b):
 
 # -- fused optimizer step ------------------------------------------------------
 
-def fused_sgd_step(params, grads, lr: float, momentum: float = 0.0,
-                   weight_decay: float = 0.0, state=None):
-    """One fused in-place SGD pass over raw ``array('f')`` params.
+def fused_sgd_step_py(params, grads, lr: float, momentum: float = 0.0,
+                      weight_decay: float = 0.0, state=None):
+    """Pure-Python fused SGD step (the fallback; see ``fused_sgd_step``).
 
     ``params`` / ``grads`` are parallel lists of ``array('f')`` (a grad
     entry may be None to skip that param). ``state`` is a parallel list
@@ -732,6 +816,53 @@ def fused_sgd_step(params, grads, lr: float, momentum: float = 0.0,
     return state
 
 
+def fused_sgd_step_c(params, grads, lr: float, momentum: float = 0.0,
+                     weight_decay: float = 0.0, state=None):
+    """Fused SGD step via the C core (raises if the C core is not built).
+
+    Same arguments, same in-place semantics and same return value as
+    ``fused_sgd_step_py``: ``params`` / ``grads`` are parallel lists of
+    ``array('f')`` (a grad entry may be None to skip that param), and
+    ``state`` is the parallel velocity list, created on first use when
+    momentum is on. The C kernel updates each param in place and only
+    returns new velocity bytes when it had to create them.
+    """
+    if not C_AVAILABLE:
+        raise RuntimeError("C core not built — run scripts/build_c.py, "
+                           "or use fused_sgd_step_py instead")
+    if state is None:
+        state = [None] * len(params)
+    for pi, (p, g) in enumerate(zip(params, grads)):
+        if g is None:
+            continue
+        if len(p) != len(g):
+            raise ValueError(f"param {pi}: {len(p)} params vs "
+                             f"{len(g)} grads")
+        v = state[pi] if momentum else None
+        created = _C.fused_sgd(p, g, v, float(lr), float(momentum),
+                               float(weight_decay))
+        if created is not None:
+            vel = array("f")
+            vel.frombytes(created)
+            state[pi] = vel
+    return state
+
+
+def fused_sgd_step(params, grads, lr: float, momentum: float = 0.0,
+                   weight_decay: float = 0.0, state=None):
+    """Fused SGD step: the C core when built, else the pure-Python loop.
+
+    Same arguments, same in-place semantics and same return value as
+    ``fused_sgd_step_py``; the C kernel (``fused_sgd_step_c``) is used
+    per param when the C core is available.
+    """
+    if C_AVAILABLE:
+        return fused_sgd_step_c(params, grads, lr, momentum, weight_decay,
+                                state)
+    return fused_sgd_step_py(params, grads, lr, momentum, weight_decay,
+                             state)
+
+
 __all__ = [
     "OP_NONE", "OP_ADD", "OP_MUL", "OP_MATMUL", "OP_RELU", "OP_SUM",
     "OP_FUSED_LINEAR_RELU", "OP_NAMES", "DEFAULT_BLOCK",
@@ -740,5 +871,5 @@ __all__ = [
     "matmul_tiled", "matmul_tiled_into", "matmul_rows", "matmul_rows_into",
     "matmul_c", "matmul",
     "fused_linear_relu_raw", "fused_linear_relu_c", "fused_linear_relu",
-    "fused_sgd_step",
+    "fused_sgd_step", "fused_sgd_step_py", "fused_sgd_step_c",
 ]

@@ -1,8 +1,8 @@
 /* darklearn/_darkcore.c — DarkCore's optional C core.
  *
  * Same kernels as darkcore.py, in C: tiled matmul (float, row-major,
- * block 32, i-k-j order) and fused linear+ReLU. No external libraries,
- * only the C stdlib and the CPython C API.
+ * block 32, i-k-j order), fused linear+ReLU, and the fused SGD step.
+ * No external libraries, only the C stdlib and the CPython C API.
  *
  * Inputs/outputs cross the boundary as raw float32 bytes: the Python
  * side passes array('f') objects (buffer protocol) and gets `bytes`
@@ -199,6 +199,100 @@ darkcore_fused_linear_relu(PyObject *self, PyObject *args)
     return res;
 }
 
+/* --- fused SGD step -------------------------------------------------- */
+/* fused_sgd(p, g, v_or_None, lr, momentum, wd) -> velocity bytes or None
+ * p: writable float32 buffer (params, updated in place).
+ * g: readable float32 buffer (grads, same length as p).
+ * v: writable float32 buffer (velocity, same length) or None.
+ * Per element, in one C pass (same maths as optim.SGD / the Python
+ * fused_sgd_step_py, computed in double and rounded once per store
+ * so the results match the Python loop to float32 rounding):
+ *   with momentum:  gv = g[i] + wd*p[i]; v[i] = momentum*v[i] + gv;
+ *                   p[i] -= lr*v[i]
+ *   without:        p[i] -= lr*(g[i] + wd*p[i])
+ * When momentum != 0 and no velocity is passed, a zeroed velocity is
+ * created and returned as bytes (the Python side wraps it in an
+ * array('f') and keeps it as the state). Otherwise returns None.
+ */
+static PyObject *
+darkcore_fused_sgd(PyObject *self, PyObject *args)
+{
+    PyObject *p_obj, *g_obj, *v_obj;
+    double lr, momentum, wd;
+    if (!PyArg_ParseTuple(args, "OOOddd", &p_obj, &g_obj, &v_obj,
+                          &lr, &momentum, &wd))
+        return NULL;
+    int have_v = (v_obj != Py_None);
+    if (momentum == 0.0)
+        have_v = 0;  /* no velocity is touched without momentum */
+
+    Py_buffer p_buf, g_buf, v_buf;
+    memset(&v_buf, 0, sizeof(v_buf));
+    if (PyObject_GetBuffer(p_obj, &p_buf, PyBUF_WRITABLE) < 0)
+        return NULL;
+    if (PyObject_GetBuffer(g_obj, &g_buf, PyBUF_SIMPLE) < 0) {
+        PyBuffer_Release(&p_buf);
+        return NULL;
+    }
+    if (have_v && PyObject_GetBuffer(v_obj, &v_buf, PyBUF_WRITABLE) < 0) {
+        PyBuffer_Release(&p_buf);
+        PyBuffer_Release(&g_buf);
+        return NULL;
+    }
+    Py_ssize_t n = p_buf.len / (Py_ssize_t)sizeof(float);
+    if (p_buf.len % (Py_ssize_t)sizeof(float) != 0 ||
+        g_buf.len < n * (Py_ssize_t)sizeof(float) ||
+        (have_v && v_buf.len < n * (Py_ssize_t)sizeof(float))) {
+        PyErr_SetString(PyExc_ValueError,
+                        "p, g and v (when given) must hold the same "
+                        "number of float32 elements");
+        PyBuffer_Release(&p_buf);
+        PyBuffer_Release(&g_buf);
+        if (have_v)
+            PyBuffer_Release(&v_buf);
+        return NULL;
+    }
+
+    float *p = (float *)p_buf.buf;
+    const float *g = (const float *)g_buf.buf;
+    float *v = have_v ? (float *)v_buf.buf : NULL;
+    PyObject *created = NULL;
+    if (momentum != 0.0 && !have_v) {
+        created = PyBytes_FromStringAndSize(
+            NULL, n * (Py_ssize_t)sizeof(float));
+        if (created == NULL) {
+            PyBuffer_Release(&p_buf);
+            PyBuffer_Release(&g_buf);
+            return NULL;
+        }
+        v = (float *)PyBytes_AS_STRING(created);
+        memset(v, 0, (size_t)(n * sizeof(float)));
+    }
+
+    if (momentum != 0.0) {
+        /* Same evaluation order as the Python loop
+         * (mo*v + g + wd*p, left to right) so results match it to
+         * float32 rounding. */
+        for (Py_ssize_t i = 0; i < n; i++) {
+            v[i] = (float)(momentum * (double)v[i] + (double)g[i] +
+                           wd * (double)p[i]);
+            p[i] = (float)((double)p[i] - lr * (double)v[i]);
+        }
+    } else {
+        for (Py_ssize_t i = 0; i < n; i++)
+            p[i] = (float)((double)p[i] -
+                           lr * ((double)g[i] + wd * (double)p[i]));
+    }
+
+    PyBuffer_Release(&p_buf);
+    PyBuffer_Release(&g_buf);
+    if (have_v)
+        PyBuffer_Release(&v_buf);
+    if (created != NULL)
+        return created;
+    Py_RETURN_NONE;
+}
+
 /* --- module ----------------------------------------------------------- */
 
 static PyMethodDef DarkcoreMethods[] = {
@@ -206,6 +300,9 @@ static PyMethodDef DarkcoreMethods[] = {
      "matmul(a, b, m, k, n, block=32) -> bytes: tiled float32 matmul."},
     {"fused_linear_relu", darkcore_fused_linear_relu, METH_VARARGS,
      "fused_linear_relu(x, w, b, batch, in_f, out_f) -> (bytes, bytes)."},
+    {"fused_sgd", darkcore_fused_sgd, METH_VARARGS,
+     "fused_sgd(p, g, v_or_None, lr, momentum, wd) -> bytes or None: "
+     "in-place fused SGD step."},
     {NULL, NULL, 0, NULL}
 };
 
